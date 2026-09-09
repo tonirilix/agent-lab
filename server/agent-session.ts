@@ -1,13 +1,20 @@
 import {
   convertToModelMessages,
   isStepCount,
+  jsonSchema,
   streamText,
   toUIMessageStream,
   tool,
   type LanguageModel,
   type UIMessage,
+  zodSchema,
 } from "ai";
 import { z } from "zod";
+import { changeSetProposalSchema } from "../shared/change-set-contracts.js";
+import {
+  ChangeSetValidationError,
+  createChangeSetService,
+} from "./change-set.js";
 import {
   WorkspaceAccessError,
   createWorkspaceTools,
@@ -89,9 +96,10 @@ export async function createAgentSession({
   workspace: WorkspaceRoot;
 }) {
   const workspaceTools = await createWorkspaceTools(workspace);
+  const changeSets = createChangeSetService(workspaceTools);
   let activeTurn = false;
 
-  const tools = {
+  const readOnlyTools = {
     listFiles: tool({
       description:
         "List eligible UTF-8 text files in the Workspace, optionally below a relative directory.",
@@ -148,22 +156,63 @@ export async function createAgentSession({
   };
 
   return {
-    async startTurn(messages: UIMessage[], abortSignal?: AbortSignal) {
+    async startTurn(
+      messages: UIMessage[],
+      abortSignal?: AbortSignal,
+      options: { proposalRequested?: boolean } = {},
+    ) {
       if (activeTurn) throw new ActiveAgentTurnError();
       activeTurn = true;
+      let proposalCreatedThisTurn = false;
 
       try {
+        const tools = options.proposalRequested
+          ? {
+              ...readOnlyTools,
+              proposeChangeSet: tool({
+                description:
+                  "Prepare one structured Change Set for review. This creates no files and grants no write permission.",
+                inputSchema: jsonSchema(
+                  zodSchema(changeSetProposalSchema).jsonSchema,
+                ),
+                execute: async (proposal) => {
+                  try {
+                    const changeSet = await changeSets.prepare(proposal);
+                    proposalCreatedThisTurn = true;
+                    return { ok: true as const, changeSet };
+                  } catch (error) {
+                    if (error instanceof ChangeSetValidationError) {
+                      return {
+                        ok: false as const,
+                        error: {
+                          code: "invalid_change_set",
+                          message: error.message,
+                        },
+                      };
+                    }
+                    throw error;
+                  }
+                },
+              }),
+            }
+          : readOnlyTools;
         const result = streamText({
           model,
           instructions: [
             "You are the Coding Agent in Agent Lab.",
             "Use the read-only Workspace Tools to investigate code when needed.",
             "Never claim that you changed files: this Agent Turn has no write capability.",
+            options.proposalRequested
+              ? "The user made a Proposal Request. After enough inspection, call proposeChangeSet once with the complete Change Set. This prepares review data only."
+              : "No Proposal Request was made. You cannot prepare a Change Set in this Agent Turn.",
             "Be concise and explain conclusions using the evidence you inspected.",
           ].join(" "),
           messages: await convertToModelMessages(messages),
           tools,
-          stopWhen: isStepCount(MAX_AGENT_STEPS),
+          stopWhen: [
+            isStepCount(MAX_AGENT_STEPS),
+            () => proposalCreatedThisTurn,
+          ],
           abortSignal,
         });
 
@@ -177,6 +226,14 @@ export async function createAgentSession({
         activeTurn = false;
         throw error;
       }
+    },
+
+    getPendingChangeSet() {
+      return changeSets.getPending();
+    },
+
+    rejectChangeSet(id: string, feedback?: string) {
+      return changeSets.reject(id, feedback);
     },
   };
 }

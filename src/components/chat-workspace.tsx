@@ -1,8 +1,18 @@
 import { useChat } from "@ai-sdk/react";
-import { AlertCircle, Bot, RotateCcw, Send, Square, User } from "lucide-react";
+import {
+  AlertCircle,
+  Bot,
+  GitPullRequestArrow,
+  RotateCcw,
+  Send,
+  Square,
+  User,
+} from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { DefaultChatTransport, isToolUIPart } from "ai";
 import { MessageMarkdown } from "./message-markdown";
+import { changeSetReviewFromPart } from "../lib/change-set-tool-result";
+import { ChangeSetCard } from "./change-set-card";
 import { ToolTraceEntry } from "./tool-trace-entry";
 import { Button } from "./ui/button";
 import { Message, MessageAvatar, MessageContent } from "./ui/message";
@@ -52,7 +62,17 @@ export function ChatWorkspace() {
   });
   const [input, setInput] = useState("");
   const [interrupted, setInterrupted] = useState(false);
+  const [rejectedChangeSets, setRejectedChangeSets] = useState<Set<string>>(
+    () => new Set(),
+  );
   const active = status === "submitted" || status === "streaming";
+  const hasPendingChangeSet = messages.some((message) =>
+    message.parts.some((part) => {
+      if (!isToolUIPart(part)) return false;
+      const review = changeSetReviewFromPart(part);
+      return review ? !rejectedChangeSets.has(review.changeSet.id) : false;
+    }),
+  );
 
   function submit() {
     const text = input.trim();
@@ -65,6 +85,24 @@ export function ChatWorkspace() {
   function retry() {
     setInterrupted(false);
     void regenerate();
+  }
+
+  function requestProposal() {
+    if (active || hasPendingChangeSet || messages.length === 0) return;
+    setInterrupted(false);
+    void sendMessage(
+      {
+        text: "Proposal Request: Prepare one Change Set from our discussion for review.",
+      },
+      { body: { proposalRequested: true } },
+    );
+  }
+
+  function handleRejectedChangeSet(id: string, feedback: string) {
+    setRejectedChangeSets((current) => new Set(current).add(id));
+    if (feedback) {
+      setInput(`I rejected the Change Set. Feedback: ${feedback}`);
+    }
   }
 
   return (
@@ -118,6 +156,18 @@ export function ChatWorkspace() {
                           );
                         }
                         if (isToolUIPart(part)) {
+                          const review = changeSetReviewFromPart(part);
+                          if (review) {
+                            return (
+                              <ChangeSetCard
+                                key={key}
+                                changeSet={review.changeSet}
+                                toolInput={review.toolInput}
+                                toolOutput={review.toolOutput}
+                                onRejected={handleRejectedChangeSet}
+                              />
+                            );
+                          }
                           return <ToolTraceEntry key={key} part={part} />;
                         }
                         return null;
@@ -202,6 +252,18 @@ export function ChatWorkspace() {
         <p className="mx-auto mt-2 max-w-3xl text-center text-[11px] text-muted-foreground">
           Enter to send · Shift+Enter for a new line
         </p>
+        <div className="mx-auto mt-3 flex max-w-3xl justify-center">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={requestProposal}
+            disabled={active || hasPendingChangeSet || messages.length === 0}
+          >
+            <GitPullRequestArrow />
+            {hasPendingChangeSet ? "Change Set pending" : "Propose changes"}
+          </Button>
+        </div>
         <p className="sr-only" aria-live="polite" aria-atomic="true">
           {status === "submitted"
             ? "Message sent. Waiting for OpenAI."

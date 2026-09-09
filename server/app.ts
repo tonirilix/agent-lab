@@ -43,7 +43,7 @@ export function createApp(
       );
     }
 
-    let body: { messages?: UIMessage[] };
+    let body: { messages?: UIMessage[]; proposalRequested?: boolean };
     try {
       body = (await context.req.json()) as { messages?: UIMessage[] };
     } catch {
@@ -58,10 +58,39 @@ export function createApp(
         stream: await (await agentSession!).startTurn(
           body.messages,
           context.req.raw.signal,
+          { proposalRequested: body.proposalRequested === true },
         ),
       });
     } catch (error) {
       if (error instanceof ActiveAgentTurnError) {
+        return context.json({ error: error.message }, 409);
+      }
+      throw error;
+    }
+  });
+
+  app.post("/api/change-sets/:id/reject", async (context) => {
+    if (!agentSession) {
+      return context.json({ error: "Agent session is unavailable." }, 503);
+    }
+    let body: { feedback?: unknown };
+    try {
+      body = (await context.req.json()) as { feedback?: unknown };
+    } catch {
+      return context.json({ error: "Request body must be valid JSON." }, 400);
+    }
+    if (body.feedback !== undefined && typeof body.feedback !== "string") {
+      return context.json({ error: "feedback must be a string" }, 400);
+    }
+    try {
+      return context.json(
+        await (await agentSession).rejectChangeSet(
+          context.req.param("id"),
+          body.feedback,
+        ),
+      );
+    } catch (error) {
+      if (error instanceof Error) {
         return context.json({ error: error.message }, 409);
       }
       throw error;

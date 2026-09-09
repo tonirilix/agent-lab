@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { createHash } from "node:crypto";
 import { lstat, opendir, readFile as readFileFromDisk, realpath } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -159,6 +160,11 @@ export async function createWorkspaceTools(workspace: WorkspaceRoot) {
       throw new WorkspaceAccessError(`Path escapes the Workspace: ${path}`);
     }
     const relativePath = portablePath(relative(root, target));
+    if (portablePath(path) !== relativePath) {
+      throw new WorkspaceAccessError(
+        `Path must be normalized relative to the Workspace: ${path}`,
+      );
+    }
     if (
       relativePath
         .split("/")
@@ -252,6 +258,7 @@ export async function createWorkspaceTools(workspace: WorkspaceRoot) {
     return {
       path: resolved.relativePath,
       content: assertSafeText(content, path),
+      fingerprint: createHash("sha256").update(content).digest("hex"),
       sizeBytes: content.byteLength,
       truncated: false as const,
     };
@@ -346,6 +353,47 @@ export async function createWorkspaceTools(workspace: WorkspaceRoot) {
 
     async readFile(input: { path: string }, options: InspectionOptions = {}) {
       return inspectTextFile(input.path, options);
+    },
+
+    validateProposedContent(input: { path: string; content: string }) {
+      const content = Buffer.from(input.content, "utf8");
+      if (content.byteLength > MAX_FILE_BYTES) {
+        throw new WorkspaceAccessError(
+          `Proposed content exceeds the ${MAX_FILE_BYTES}-byte Safety Limit: ${input.path}`,
+        );
+      }
+      assertSafeText(content, input.path);
+      return { sizeBytes: content.byteLength };
+    },
+
+    async validateCreatePath(input: { path: string }) {
+      const proposed = assertEligiblePath(input.path);
+      await assertNotIgnored(proposed.relativePath);
+      let canonicalParent: string;
+      try {
+        canonicalParent = await realpath(dirname(proposed.target));
+      } catch {
+        throw new WorkspaceAccessError(
+          `Parent directory does not exist: ${input.path}`,
+        );
+      }
+      if (!isInside(root, canonicalParent)) {
+        throw new WorkspaceAccessError(
+          `Path escapes the Workspace through a symlink: ${input.path}`,
+        );
+      }
+      try {
+        await lstat(proposed.target);
+        throw new WorkspaceAccessError(`Create path already exists: ${input.path}`);
+      } catch (error) {
+        if (
+          error instanceof WorkspaceAccessError ||
+          !(error instanceof Error && "code" in error && error.code === "ENOENT")
+        ) {
+          throw error;
+        }
+      }
+      return { path: proposed.relativePath };
     },
 
     async searchCode(

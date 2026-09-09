@@ -1,4 +1,12 @@
-import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { simulateReadableStream } from "ai";
@@ -17,6 +25,10 @@ const usage = {
   },
   outputTokens: { total: 4, text: 4, reasoning: undefined },
 };
+
+function fingerprint(content: string) {
+  return createHash("sha256").update(content).digest("hex");
+}
 
 async function workspaceWithSource() {
   const workspace = await mkdtemp(join(tmpdir(), "agent-lab-session-"));
@@ -180,6 +192,9 @@ describe("Agent session", () => {
     const trace = JSON.stringify(chunks);
 
     expect(model.doStreamCalls).toHaveLength(2);
+    expect(JSON.stringify(model.doStreamCalls[0]?.tools)).not.toContain(
+      "proposeChangeSet",
+    );
     expect(trace).toContain('"toolName":"readFile"');
     expect(trace).toContain("export const tasks = ['learn'];");
     expect(trace).toContain("I found the task list.");
@@ -340,5 +355,201 @@ describe("Agent session", () => {
     expect(JSON.stringify(received)).toContain('"toolName":"listFiles"');
     expect(JSON.stringify(received)).not.toContain('"toolName":"readFile"');
     expect(model.doStreamCalls.length).toBeLessThanOrEqual(2);
+  });
+
+  it("prepares and rejects a Change Set only in an explicit Proposal Request", async () => {
+    const workspace = await workspaceWithSource();
+    const original = "export const tasks = ['learn'];\n";
+    let modelCall = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        modelCall += 1;
+        if (modelCall === 1) {
+          return {
+            stream: simulateReadableStream({
+              chunks: [
+                { type: "text-start" as const, id: "discussion" },
+                {
+                  type: "text-delta" as const,
+                  id: "discussion",
+                  delta: "We can add a second task without writing yet.",
+                },
+                { type: "text-end" as const, id: "discussion" },
+                {
+                  type: "finish" as const,
+                  finishReason: { unified: "stop" as const, raw: undefined },
+                  logprobs: undefined,
+                  usage,
+                },
+              ],
+            }),
+          };
+        }
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              {
+                type: "tool-call" as const,
+                toolCallId: "proposal-1",
+                toolName: "proposeChangeSet",
+                input: JSON.stringify({
+                  summary: "Add a second task",
+                  operations: [
+                    {
+                      kind: "modify",
+                      path: "src/tasks.ts",
+                      originalFingerprint: createHash("sha256")
+                        .update(original)
+                        .digest("hex"),
+                      content: "export const tasks = ['learn', 'build'];\n",
+                    },
+                  ],
+                }),
+              },
+              {
+                type: "finish" as const,
+                finishReason: {
+                  unified: "tool-calls" as const,
+                  raw: undefined,
+                },
+                logprobs: undefined,
+                usage,
+              },
+            ],
+          }),
+        };
+      },
+    });
+    const session = await createAgentSession({
+      model,
+      workspace: await resolveWorkspaceRoot(workspace),
+    });
+
+    const discussion = await collectStream(
+      await session.startTurn([
+        {
+          id: "user-1",
+          role: "user",
+          parts: [{ type: "text", text: "Could we add another task?" }],
+        },
+      ]),
+    );
+    expect(JSON.stringify(discussion)).toContain("without writing yet");
+    expect(JSON.stringify(model.doStreamCalls[0]?.tools)).not.toContain(
+      "proposeChangeSet",
+    );
+    expect(await readFile(join(workspace, "src", "tasks.ts"), "utf8")).toBe(
+      original,
+    );
+
+    const trace = JSON.stringify(
+      await collectStream(
+        await session.startTurn(
+          [
+            {
+              id: "user-1",
+              role: "user",
+              parts: [{ type: "text", text: "We agreed on a second task." }],
+            },
+          ],
+          undefined,
+          { proposalRequested: true },
+        ),
+      ),
+    );
+    const pending = session.getPendingChangeSet();
+
+    expect(JSON.stringify(model.doStreamCalls[1]?.tools)).toContain(
+      "proposeChangeSet",
+    );
+    expect(trace).toContain("Add a second task");
+    expect(trace).toContain("--- a/src/tasks.ts");
+    expect(pending?.status).toBe("pending");
+    expect(await readFile(join(workspace, "src", "tasks.ts"), "utf8")).toBe(
+      original,
+    );
+
+    await session.rejectChangeSet(pending!.id, "Keep the example smaller.");
+    expect(session.getPendingChangeSet()).toBeNull();
+    expect(await readFile(join(workspace, "src", "tasks.ts"), "utf8")).toBe(
+      original,
+    );
+  });
+
+  it("returns malformed Change Set fields as a visible Tool error and accepts a corrected proposal", async () => {
+    const workspace = await workspaceWithSource();
+    const original = "export const tasks = ['learn'];\n";
+    let modelCall = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        modelCall += 1;
+        const operation =
+          modelCall === 1
+            ? {
+                kind: "delete",
+                path: "src/tasks.ts",
+                originalFingerprint: fingerprint(original),
+                content: "delete operations must not carry content",
+              }
+            : {
+                kind: "modify",
+                path: "src/tasks.ts",
+                originalFingerprint: fingerprint(original),
+                content: "export const tasks = ['learn', 'correct'];\n",
+              };
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              {
+                type: "tool-call" as const,
+                toolCallId: `proposal-${modelCall}`,
+                toolName: "proposeChangeSet",
+                input: JSON.stringify({
+                  summary: modelCall === 1 ? "Malformed" : "Corrected",
+                  operations: [operation],
+                }),
+              },
+              {
+                type: "finish" as const,
+                finishReason: {
+                  unified: "tool-calls" as const,
+                  raw: undefined,
+                },
+                logprobs: undefined,
+                usage,
+              },
+            ],
+          }),
+        };
+      },
+    });
+    const session = await createAgentSession({
+      model,
+      workspace: await resolveWorkspaceRoot(workspace),
+    });
+
+    const trace = JSON.stringify(
+      await collectStream(
+        await session.startTurn(
+          [
+            {
+              id: "user-1",
+              role: "user",
+              parts: [{ type: "text", text: "Prepare the agreed change." }],
+            },
+          ],
+          undefined,
+          { proposalRequested: true },
+        ),
+      ),
+    );
+
+    expect(model.doStreamCalls).toHaveLength(2);
+    expect(trace).toContain('"code":"invalid_change_set"');
+    expect(trace).toContain("Unrecognized key");
+    expect(session.getPendingChangeSet()?.summary).toBe("Corrected");
+    expect(await readFile(join(workspace, "src", "tasks.ts"), "utf8")).toBe(
+      original,
+    );
   });
 });
