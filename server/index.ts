@@ -1,0 +1,42 @@
+import { serve } from "@hono/node-server";
+import { resolve } from "node:path";
+import { createApp } from "./app.js";
+import { resolveAgentConfiguration } from "./config.js";
+
+function readArgument(name: string): string | undefined {
+  const index = process.argv.indexOf(`--${name}`);
+  return index >= 0 ? process.argv[index + 1] : undefined;
+}
+
+const workspace =
+  readArgument("workspace") ??
+  process.env.AGENT_LAB_WORKSPACE ??
+  resolve("examples/task-list");
+
+try {
+  const config = await resolveAgentConfiguration({
+    workspace,
+    openAiApiKey: process.env.OPENAI_API_KEY,
+    openAiModel: process.env.OPENAI_MODEL,
+  });
+  const app = createApp(config);
+  const port = Number(process.env.AGENT_LAB_PORT ?? 8787);
+
+  serve({
+    fetch: app.fetch,
+    hostname: "127.0.0.1",
+    port,
+  });
+
+  console.log(`Agent Lab is running at http://127.0.0.1:${port}`);
+  console.log(
+    `Workspace: ${
+      config.status === "invalid-workspace"
+        ? config.requestedWorkspace
+        : config.workspace
+    }`,
+  );
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exitCode = 1;
+}
