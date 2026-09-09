@@ -33,7 +33,7 @@ try {
     `Workspace: ${
       config.status === "invalid-workspace"
         ? config.requestedWorkspace
-        : config.workspace
+        : config.workspace.canonicalPath
     }`,
   );
 } catch (error) {

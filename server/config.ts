@@ -1,10 +1,10 @@
 import { execFile } from "node:child_process";
-import { realpath, stat } from "node:fs/promises";
 import { promisify } from "node:util";
 import {
   publicAgentConfigurationSchema,
   type PublicAgentConfiguration,
 } from "../shared/contracts.js";
+import { resolveWorkspaceRoot, type WorkspaceRoot } from "./workspace-root.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -15,7 +15,7 @@ export type GitState = {
 
 type ConfiguredAgent = {
   status: "ready" | "needs-api-key";
-  workspace: string;
+  workspace: WorkspaceRoot;
   provider: "OpenAI";
   model: string;
   openAiApiKey?: string;
@@ -40,11 +40,11 @@ type ConfigurationInput = {
   openAiModel?: string;
 };
 
-async function readGitState(workspace: string): Promise<GitState | null> {
+async function readGitState(workspace: WorkspaceRoot): Promise<GitState | null> {
   try {
     const [{ stdout: branch }, { stdout: changes }] = await Promise.all([
-      execFileAsync("git", ["-C", workspace, "branch", "--show-current"]),
-      execFileAsync("git", ["-C", workspace, "status", "--porcelain"]),
+      execFileAsync("git", ["-C", workspace.canonicalPath, "branch", "--show-current"]),
+      execFileAsync("git", ["-C", workspace.canonicalPath, "status", "--porcelain"]),
     ]);
 
     return {
@@ -61,14 +61,10 @@ export async function resolveAgentConfiguration(
 ): Promise<AgentConfiguration> {
   const model = input.openAiModel?.trim() || "gpt-5.6-sol";
   const apiKey = input.openAiApiKey?.trim() || undefined;
-  let workspace: string;
+  let workspace: WorkspaceRoot;
 
   try {
-    workspace = await realpath(input.workspace);
-    const workspaceStat = await stat(workspace);
-    if (!workspaceStat.isDirectory()) {
-      throw new Error("not a directory");
-    }
+    workspace = await resolveWorkspaceRoot(input.workspace);
   } catch {
     return {
       status: "invalid-workspace",
@@ -106,7 +102,7 @@ export function publicAgentConfiguration(
         }
       : {
           status: config.status,
-          workspace: config.workspace,
+          workspace: config.workspace.canonicalPath,
           provider: config.provider,
           model: config.model,
           git: config.git,

@@ -1,9 +1,6 @@
 import { Hono } from "hono";
 import {
-  convertToModelMessages,
   createUIMessageStreamResponse,
-  streamText,
-  toUIMessageStream,
   type LanguageModel,
   type UIMessage,
 } from "ai";
@@ -12,48 +9,11 @@ import {
   type AgentConfiguration,
 } from "./config.js";
 import { createConfiguredModel } from "./model.js";
+import { ActiveAgentTurnError, createAgentSession } from "./agent-session.js";
 
 type AppDependencies = {
   model?: LanguageModel;
 };
-
-function releaseWhenFinished<T>(
-  stream: ReadableStream<T>,
-  release: () => void,
-): ReadableStream<T> {
-  const reader = stream.getReader();
-  let released = false;
-  const releaseOnce = () => {
-    if (!released) {
-      released = true;
-      release();
-    }
-  };
-
-  return new ReadableStream<T>({
-    async pull(controller) {
-      try {
-        const chunk = await reader.read();
-        if (chunk.done) {
-          releaseOnce();
-          controller.close();
-        } else {
-          controller.enqueue(chunk.value);
-        }
-      } catch (error) {
-        releaseOnce();
-        controller.error(error);
-      }
-    },
-    async cancel(reason) {
-      try {
-        await reader.cancel(reason);
-      } finally {
-        releaseOnce();
-      }
-    },
-  });
-}
 
 export function createApp(
   config: AgentConfiguration,
@@ -61,7 +21,10 @@ export function createApp(
 ) {
   const app = new Hono();
   const model = dependencies.model ?? createConfiguredModel(config);
-  let activeTurn = false;
+  const agentSession =
+    model && config.status !== "invalid-workspace"
+      ? createAgentSession({ model, workspace: config.workspace })
+      : null;
 
   app.get("/api/config", (context) =>
     context.json(publicAgentConfiguration(config)),
@@ -80,42 +43,27 @@ export function createApp(
       );
     }
 
-    if (activeTurn) {
-      return context.json({ error: "An Agent Turn is already active." }, 409);
-    }
-    activeTurn = true;
-
     let body: { messages?: UIMessage[] };
     try {
       body = (await context.req.json()) as { messages?: UIMessage[] };
     } catch {
-      activeTurn = false;
       return context.json({ error: "Request body must be valid JSON." }, 400);
     }
     if (!Array.isArray(body.messages)) {
-      activeTurn = false;
       return context.json({ error: "messages must be an array" }, 400);
     }
 
     try {
-      const result = streamText({
-        model,
-        instructions:
-          "You are the Coding Agent in Agent Lab. Be concise and explain your conclusions. You cannot inspect or modify the Workspace yet.",
-        messages: await convertToModelMessages(body.messages),
-        abortSignal: context.req.raw.signal,
-      });
-
       return createUIMessageStreamResponse({
-        stream: releaseWhenFinished(
-          toUIMessageStream({ stream: result.stream }),
-          () => {
-            activeTurn = false;
-          },
+        stream: await (await agentSession!).startTurn(
+          body.messages,
+          context.req.raw.signal,
         ),
       });
     } catch (error) {
-      activeTurn = false;
+      if (error instanceof ActiveAgentTurnError) {
+        return context.json({ error: error.message }, 409);
+      }
       throw error;
     }
   });

@@ -1,8 +1,9 @@
 import { useChat } from "@ai-sdk/react";
 import { AlertCircle, Bot, RotateCcw, Send, Square, User } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
-import { DefaultChatTransport } from "ai";
+import { DefaultChatTransport, isToolUIPart } from "ai";
 import { MessageMarkdown } from "./message-markdown";
+import { ToolTraceEntry } from "./tool-trace-entry";
 import { Button } from "./ui/button";
 import { Message, MessageAvatar, MessageContent } from "./ui/message";
 import {
@@ -80,8 +81,8 @@ export function ChatWorkspace() {
                       What are we learning today?
                     </h2>
                     <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                      Start by discussing the Example Workspace. Tool access
-                      arrives in the next tracer bullet.
+                      Ask the Coding Agent to inspect the Example Workspace, or
+                      discuss a change before making a proposal.
                     </p>
                   </div>
                 </div>
@@ -107,16 +108,20 @@ export function ChatWorkspace() {
                           : "min-w-0 max-w-[min(100%,42rem)] rounded-2xl rounded-bl-md border border-border bg-card px-4 py-3"
                       }
                     >
-                      {message.parts.map((part, index) =>
-                        part.type === "text" ? (
-                          <div
-                            className="message-markdown"
-                            key={`${message.id}-${index}`}
-                          >
-                            <MessageMarkdown>{part.text}</MessageMarkdown>
-                          </div>
-                        ) : null,
-                      )}
+                      {message.parts.map((part, index) => {
+                        const key = `${message.id}-${index}`;
+                        if (part.type === "text") {
+                          return (
+                            <div className="message-markdown" key={key}>
+                              <MessageMarkdown>{part.text}</MessageMarkdown>
+                            </div>
+                          );
+                        }
+                        if (isToolUIPart(part)) {
+                          return <ToolTraceEntry key={key} part={part} />;
+                        }
+                        return null;
+                      })}
                     </MessageContent>
                   </Message>
                 </MessageScrollerItem>

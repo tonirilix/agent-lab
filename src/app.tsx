@@ -1,4 +1,10 @@
-import { AlertCircle, Bot, FolderGit2, KeyRound } from "lucide-react";
+import {
+  AlertCircle,
+  Bot,
+  FolderGit2,
+  KeyRound,
+  ShieldCheck,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import {
   publicAgentConfigurationSchema,
@@ -97,12 +103,24 @@ export function App() {
 
         <div className="flex flex-1 flex-col">
           <div className="border-b border-border bg-subtle px-5 py-3 sm:px-8">
-            <div className="flex items-center gap-2 text-sm">
-              <FolderGit2 className="size-4 shrink-0 text-muted" />
-              <span className="font-medium">{basename(config.workspace)}</span>
-              <span className="min-w-0 truncate text-muted">
-                {config.workspace}
-              </span>
+            <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+              <div className="flex min-w-0 items-center gap-2">
+                <FolderGit2 className="size-4 shrink-0 text-muted" />
+                <span className="font-medium">{basename(config.workspace)}</span>
+                <span className="min-w-0 truncate text-muted">
+                  {config.workspace}
+                </span>
+              </div>
+              <details className="group/privacy relative">
+                <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
+                  <ShieldCheck className="size-3.5" /> Data boundary
+                </summary>
+                <div className="absolute right-0 top-7 z-20 w-72 rounded-xl border border-border bg-popover p-4 text-xs leading-5 text-popover-foreground shadow-xl">
+                  Workspace files stay local until a Tool Call reads them. The
+                  bounded Tool result is then sent to the configured OpenAI
+                  model as conversation context.
+                </div>
+              </details>
             </div>
           </div>
 
