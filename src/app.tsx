@@ -5,6 +5,7 @@ import {
   type PublicAgentConfiguration,
 } from "../shared/contracts";
 import { Badge } from "./components/ui/badge";
+import { ChatWorkspace } from "./components/chat-workspace";
 
 function basename(path: string) {
   return path.split("/").filter(Boolean).at(-1) ?? path;
@@ -105,37 +106,26 @@ export function App() {
             </div>
           </div>
 
-          <div className="grid flex-1 place-items-center px-6 py-16 text-center">
-            <div className="max-w-md">
-              {config.status === "needs-api-key" ? (
-                <>
-                  <KeyRound className="mx-auto size-8 text-muted" />
-                  <h2 className="mt-5 text-lg font-semibold">
-                    Add your OpenAI API key
-                  </h2>
-                  <p className="mt-2 text-sm leading-6 text-muted">
-                    Set{" "}
-                    <code className="rounded bg-subtle px-1.5 py-0.5">
-                      OPENAI_API_KEY
-                    </code>{" "}
-                    in the server environment, then restart Agent Lab. The key
-                    is never sent to this browser.
-                  </p>
-                </>
-              ) : (
-                <>
-                  <Bot className="mx-auto size-8 text-muted" />
-                  <h2 className="mt-5 text-lg font-semibold">
-                    Workspace connected
-                  </h2>
-                  <p className="mt-2 text-sm leading-6 text-muted">
-                    The chat arrives in the next tracer bullet. For now, Agent
-                    Lab has established its local Workspace boundary.
-                  </p>
-                </>
-              )}
+          {config.status === "needs-api-key" ? (
+            <div className="grid flex-1 place-items-center px-6 py-16 text-center">
+              <div className="max-w-md">
+                <KeyRound className="mx-auto size-8 text-muted" />
+                <h2 className="mt-5 text-lg font-semibold">
+                  Add your OpenAI API key
+                </h2>
+                <p className="mt-2 text-sm leading-6 text-muted">
+                  Set{" "}
+                  <code className="rounded bg-subtle px-1.5 py-0.5">
+                    OPENAI_API_KEY
+                  </code>{" "}
+                  in the server environment, then restart Agent Lab. The key is
+                  never sent to this browser.
+                </p>
+              </div>
             </div>
-          </div>
+          ) : (
+            <ChatWorkspace />
+          )}
         </div>
       </section>
     </main>
