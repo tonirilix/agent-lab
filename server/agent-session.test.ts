@@ -15,6 +15,7 @@ import { MockLanguageModelV4 } from "ai/test";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAgentSession, MAX_AGENT_STEPS } from "./agent-session.js";
 import { resolveWorkspaceRoot } from "./workspace-root.js";
+import type { ChangeOperation } from "../shared/change-set-contracts.js";
 
 const temporaryWorkspaces: string[] = [];
 const usage = {
@@ -117,6 +118,127 @@ async function runSingleTool(
   return { model, trace: JSON.stringify(chunks) };
 }
 
+async function prepareSessionChangeSet(
+  workspace: string,
+  operations: ChangeOperation[],
+) {
+  const model = new MockLanguageModelV4({
+    doStream: async () => ({
+      stream: simulateReadableStream({
+        chunks: [
+          {
+            type: "tool-call" as const,
+            toolCallId: "prepared-change-set",
+            toolName: "proposeChangeSet",
+            input: JSON.stringify({ summary: "Prepared test Change Set", operations }),
+          },
+          {
+            type: "finish" as const,
+            finishReason: { unified: "tool-calls" as const, raw: undefined },
+            logprobs: undefined,
+            usage,
+          },
+        ],
+      }),
+    }),
+  });
+  const session = await createAgentSession({
+    model,
+    workspace: await resolveWorkspaceRoot(workspace),
+  });
+  await collectStream(
+    await session.startTurn(
+      [
+        {
+          id: "proposal",
+          role: "user",
+          parts: [{ type: "text", text: "Prepare the Change Set." }],
+        },
+      ],
+      undefined,
+      { proposalRequested: true },
+    ),
+  );
+  return session;
+}
+
+async function prepareRollbackScenario(sabotageRollback: boolean) {
+  const workspace = await workspaceWithSource();
+  const original = "export const tasks = ['learn'];\n";
+  const spacerPaths = Array.from(
+    { length: 12 },
+    (_, index) => `src/rollback-spacer-${index}.ts`,
+  );
+  await Promise.all(
+    spacerPaths.map((path, index) =>
+      writeFile(join(workspace, path), `export const spacer = ${index};\n`),
+    ),
+  );
+  const session = await prepareSessionChangeSet(workspace, [
+    {
+      kind: "create",
+      path: "src/agent-created.ts",
+      content: "export const temporary = true;\n",
+    },
+    {
+      kind: "modify",
+      path: "src/tasks.ts",
+      originalFingerprint: fingerprint(original),
+      content: "export const tasks = ['changed'];\n",
+    },
+    ...spacerPaths.map((path, index) => ({
+      kind: "delete" as const,
+      path,
+      originalFingerprint: fingerprint(`export const spacer = ${index};\n`),
+    })),
+    {
+      kind: "create",
+      path: "src/collision.ts",
+      content: "export const agent = true;\n",
+    },
+  ]);
+  const tasksPath = join(workspace, "src", "tasks.ts");
+  const collisionPath = join(workspace, "src", "collision.ts");
+  const competingWriter = spawn(process.execPath, [
+    "-e",
+    [
+      "const fs = require('node:fs');",
+      "const [watched, collision, sabotage] = process.argv.slice(1);",
+      "process.stdout.write('ready\\n');",
+      "const deadline = Date.now() + 5000;",
+      "while (Date.now() < deadline) {",
+      "  try {",
+      "    if (fs.readFileSync(watched, 'utf8').includes('changed')) {",
+      "      fs.writeFileSync(collision, 'export const user = true;\\n', { flag: 'wx' });",
+      "      if (sabotage === 'true') {",
+      "        fs.rmSync(watched);",
+      "        fs.mkdirSync(watched);",
+      "      }",
+      "      process.exit(0);",
+      "    }",
+      "  } catch {}",
+      "}",
+      "process.exit(2);",
+    ].join("\n"),
+    tasksPath,
+    collisionPath,
+    String(sabotageRollback),
+  ]);
+  await new Promise<void>((resolveReady, rejectReady) => {
+    competingWriter.stdout.once("data", () => resolveReady());
+    competingWriter.once("error", rejectReady);
+  });
+  return {
+    collisionPath,
+    competingWriter,
+    original,
+    pending: session.getPendingChangeSet()!,
+    session,
+    spacerPaths,
+    workspace,
+  };
+}
+
 afterEach(async () => {
   await Promise.all(
     temporaryWorkspaces.splice(0).map((workspace) =>
@@ -126,6 +248,166 @@ afterEach(async () => {
 });
 
 describe("Agent session", () => {
+  it.each(["create", "modify", "delete"] as const)(
+    "rejects a stale %s assumption without applying an unaffected operation",
+    async (kind) => {
+      const workspace = await workspaceWithSource();
+      const tasksPath = join(workspace, "src", "tasks.ts");
+      const deletePath = join(workspace, "src", "delete.ts");
+      const unrelatedPath = join(workspace, "src", "unrelated.ts");
+      const originalTasks = "export const tasks = ['learn'];\n";
+      const originalDelete = "export const removable = true;\n";
+      const unrelated = "export const userWork = 'keep';\n";
+      await Promise.all([
+        writeFile(deletePath, originalDelete),
+        writeFile(unrelatedPath, unrelated),
+      ]);
+      const staleOperation: ChangeOperation =
+        kind === "create"
+          ? {
+              kind,
+              path: "src/stale.ts",
+              content: "export const proposed = true;\n",
+            }
+          : kind === "modify"
+            ? {
+                kind,
+                path: "src/tasks.ts",
+                originalFingerprint: fingerprint(originalTasks),
+                content: "export const tasks = ['agent'];\n",
+              }
+            : {
+                kind,
+                path: "src/delete.ts",
+                originalFingerprint: fingerprint(originalDelete),
+              };
+      const session = await prepareSessionChangeSet(workspace, [
+        staleOperation,
+        {
+          kind: "create",
+          path: "src/unaffected.ts",
+          content: "export const shouldNotExist = true;\n",
+        },
+      ]);
+      const pending = session.getPendingChangeSet()!;
+
+      if (kind === "create") {
+        await writeFile(
+          join(workspace, "src", "stale.ts"),
+          "export const userCreated = true;\n",
+        );
+      } else if (kind === "modify") {
+        await writeFile(tasksPath, "export const tasks = ['user'];\n");
+      } else {
+        await writeFile(deletePath, "export const removable = 'user changed';\n");
+      }
+
+      await expect(session.approveChangeSet(pending.id)).rejects.toThrow(
+        /already exists|changed after review/,
+      );
+      await expect(
+        readFile(join(workspace, "src", "unaffected.ts")),
+      ).rejects.toThrow();
+      expect(await readFile(unrelatedPath, "utf8")).toBe(unrelated);
+      if (kind === "create") {
+        expect(
+          await readFile(join(workspace, "src", "stale.ts"), "utf8"),
+        ).toContain("userCreated");
+      } else if (kind === "modify") {
+        expect(await readFile(tasksPath, "utf8")).toContain("'user'");
+      } else {
+        expect(await readFile(deletePath, "utf8")).toContain("user changed");
+      }
+    },
+  );
+
+  it.each(["modify", "delete"] as const)(
+    "preserves a concurrent atomic save before a %s operation commits",
+    async (kind) => {
+      const workspace = await workspaceWithSource();
+      const targetPath = join(workspace, "src", "tasks.ts");
+      const original = "export const tasks = ['learn'];\n";
+      const userContent = "export const tasks = ['user-save'];\n";
+      const spacerPaths = Array.from(
+        { length: 10 },
+        (_, index) => `src/concurrent-spacer-${index}.ts`,
+      );
+      await Promise.all(
+        spacerPaths.map((path, index) =>
+          writeFile(join(workspace, path), `export const spacer = ${index};\n`),
+        ),
+      );
+      const affectedOperation: ChangeOperation =
+        kind === "modify"
+          ? {
+              kind,
+              path: "src/tasks.ts",
+              originalFingerprint: fingerprint(original),
+              content: "export const tasks = ['agent'];\n",
+            }
+          : {
+              kind,
+              path: "src/tasks.ts",
+              originalFingerprint: fingerprint(original),
+            };
+      const session = await prepareSessionChangeSet(workspace, [
+        {
+          kind: "create",
+          path: "src/transaction-started.ts",
+          content: "export const started = true;\n",
+        },
+        ...spacerPaths.map((path, index) => ({
+          kind: "delete" as const,
+          path,
+          originalFingerprint: fingerprint(`export const spacer = ${index};\n`),
+        })),
+        affectedOperation,
+      ]);
+      const pending = session.getPendingChangeSet()!;
+      const competingWriter = spawn(process.execPath, [
+        "-e",
+        [
+          "const fs = require('node:fs');",
+          "const [trigger, target, content] = process.argv.slice(1);",
+          "process.stdout.write('ready\\n');",
+          "const deadline = Date.now() + 5000;",
+          "while (Date.now() < deadline) {",
+          "  if (fs.existsSync(trigger)) {",
+          "    const temporary = `${target}.user-save`;",
+          "    fs.writeFileSync(temporary, content);",
+          "    fs.renameSync(temporary, target);",
+          "    process.exit(0);",
+          "  }",
+          "}",
+          "process.exit(2);",
+        ].join("\n"),
+        join(workspace, "src", "transaction-started.ts"),
+        targetPath,
+        userContent,
+      ]);
+      await new Promise<void>((resolveReady, rejectReady) => {
+        competingWriter.stdout.once("data", () => resolveReady());
+        competingWriter.once("error", rejectReady);
+      });
+
+      try {
+        await expect(session.approveChangeSet(pending.id)).rejects.toThrow(
+          "changed after review",
+        );
+      } finally {
+        competingWriter.kill();
+      }
+
+      expect(await readFile(targetPath, "utf8")).toBe(userContent);
+      await expect(
+        readFile(join(workspace, "src", "transaction-started.ts")),
+      ).rejects.toThrow();
+      expect(await readFile(join(workspace, spacerPaths[0]!), "utf8")).toBe(
+        "export const spacer = 0;\n",
+      );
+    },
+  );
+
   it("applies an approved Change Set atomically, verifies it, and returns the result to the final model turn", async () => {
     const workspace = await mkdtemp(join(tmpdir(), "agent-lab-approval-"));
     temporaryWorkspaces.push(workspace);
@@ -329,120 +611,51 @@ describe("Agent session", () => {
   });
 
   it("restores every affected path when a later operation fails during application", async () => {
-    const workspace = await workspaceWithSource();
-    const original = "export const tasks = ['learn'];\n";
-    const spacerPaths = Array.from(
-      { length: 12 },
-      (_, index) => `src/spacer-${index}.ts`,
-    );
-    await Promise.all(
-      spacerPaths.map((path, index) =>
-        writeFile(join(workspace, path), `export const spacer = ${index};\n`),
-      ),
-    );
-    const model = new MockLanguageModelV4({
-      doStream: async () => ({
-        stream: simulateReadableStream({
-          chunks: [
-            {
-              type: "tool-call" as const,
-              toolCallId: "rollback-proposal",
-              toolName: "proposeChangeSet",
-              input: JSON.stringify({
-                summary: "Exercise rollback",
-                operations: [
-                  {
-                    kind: "modify",
-                    path: "src/tasks.ts",
-                    originalFingerprint: fingerprint(original),
-                    content: "export const tasks = ['changed'];\n",
-                  },
-                  ...spacerPaths.map((path, index) => ({
-                    kind: "delete",
-                    path,
-                    originalFingerprint: fingerprint(
-                      `export const spacer = ${index};\n`,
-                    ),
-                  })),
-                  {
-                    kind: "create",
-                    path: "src/collision.ts",
-                    content: "export const agent = true;\n",
-                  },
-                ],
-              }),
-            },
-            {
-              type: "finish" as const,
-              finishReason: { unified: "tool-calls" as const, raw: undefined },
-              logprobs: undefined,
-              usage,
-            },
-          ],
-        }),
-      }),
-    });
-    const session = await createAgentSession({
-      model,
-      workspace: await resolveWorkspaceRoot(workspace),
-    });
-    await collectStream(
-      await session.startTurn(
-        [
-          {
-            id: "proposal",
-            role: "user",
-            parts: [{ type: "text", text: "Prepare the Change Set." }],
-          },
-        ],
-        undefined,
-        { proposalRequested: true },
-      ),
-    );
-    const pending = session.getPendingChangeSet()!;
-    const collisionPath = join(workspace, "src", "collision.ts");
-    const competingWriter = spawn(process.execPath, [
-      "-e",
-      [
-        "const fs = require('node:fs');",
-        "const [watched, target] = process.argv.slice(1);",
-        "process.stdout.write('ready\\n');",
-        "const deadline = Date.now() + 5000;",
-        "while (Date.now() < deadline) {",
-        "  try {",
-        "    if (fs.readFileSync(watched, 'utf8').includes('changed')) {",
-        "      fs.writeFileSync(target, 'export const user = true;\\n', { flag: 'wx' });",
-        "      process.exit(0);",
-        "    }",
-        "  } catch {}",
-        "}",
-        "process.exit(2);",
-      ].join("\n"),
-      join(workspace, "src", "tasks.ts"),
-      collisionPath,
-    ]);
-    await new Promise<void>((resolveReady, rejectReady) => {
-      competingWriter.stdout.once("data", () => resolveReady());
-      competingWriter.once("error", rejectReady);
-    });
+    const scenario = await prepareRollbackScenario(false);
 
     try {
-      await expect(session.approveChangeSet(pending.id)).rejects.toThrow(
+      await expect(
+        scenario.session.approveChangeSet(scenario.pending.id),
+      ).rejects.toThrow(
         "application failed",
       );
     } finally {
-      competingWriter.kill();
+      scenario.competingWriter.kill();
     }
 
-    expect(await readFile(join(workspace, "src", "tasks.ts"), "utf8")).toBe(
-      original,
-    );
-    expect(await readFile(collisionPath, "utf8")).toBe(
+    await expect(
+      readFile(join(scenario.workspace, "src", "agent-created.ts")),
+    ).rejects.toThrow();
+    expect(
+      await readFile(join(scenario.workspace, "src", "tasks.ts"), "utf8"),
+    ).toBe(scenario.original);
+    expect(await readFile(scenario.collisionPath, "utf8")).toBe(
       "export const user = true;\n",
     );
-    expect(await readFile(join(workspace, spacerPaths[0]!), "utf8")).toBe(
-      "export const spacer = 0;\n",
-    );
+    expect(
+      await readFile(join(scenario.workspace, scenario.spacerPaths[0]!), "utf8"),
+    ).toBe("export const spacer = 0;\n");
+  });
+
+  it("surfaces application and rollback failures while restoring every recoverable path", async () => {
+    const scenario = await prepareRollbackScenario(true);
+
+    try {
+      await expect(
+        scenario.session.approveChangeSet(scenario.pending.id),
+      ).rejects.toThrow(
+        /application failed.*rollback also failed/i,
+      );
+    } finally {
+      scenario.competingWriter.kill();
+    }
+
+    await expect(
+      readFile(join(scenario.workspace, "src", "agent-created.ts")),
+    ).rejects.toThrow();
+    expect(
+      await readFile(join(scenario.workspace, scenario.spacerPaths[0]!), "utf8"),
+    ).toBe("export const spacer = 0;\n");
   });
 
   it("invalidates Approval when a rejected Change Set is revised", async () => {
@@ -947,5 +1160,71 @@ describe("Agent session", () => {
     expect(await readFile(join(workspace, "src", "tasks.ts"), "utf8")).toBe(
       original,
     );
+  });
+
+  it("returns an unsafe proposal path as an exact Tool error and accepts a safe correction", async () => {
+    const workspace = await workspaceWithSource();
+    let modelCall = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        modelCall += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              {
+                type: "tool-call" as const,
+                toolCallId: `path-proposal-${modelCall}`,
+                toolName: "proposeChangeSet",
+                input: JSON.stringify({
+                  summary: modelCall === 1 ? "Unsafe path" : "Safe correction",
+                  operations: [
+                    {
+                      kind: "create",
+                      path: modelCall === 1 ? "../escape.ts" : "src/safe.ts",
+                      content: "export const safe = true;\n",
+                    },
+                  ],
+                }),
+              },
+              {
+                type: "finish" as const,
+                finishReason: { unified: "tool-calls" as const, raw: undefined },
+                logprobs: undefined,
+                usage,
+              },
+            ],
+          }),
+        };
+      },
+    });
+    const session = await createAgentSession({
+      model,
+      workspace: await resolveWorkspaceRoot(workspace),
+    });
+
+    const trace = JSON.stringify(
+      await collectStream(
+        await session.startTurn(
+          [
+            {
+              id: "proposal",
+              role: "user",
+              parts: [{ type: "text", text: "Prepare the Change Set." }],
+            },
+          ],
+          undefined,
+          { proposalRequested: true },
+        ),
+      ),
+    );
+
+    expect(model.doStreamCalls).toHaveLength(2);
+    expect(trace).toContain('"code":"invalid_change_set"');
+    expect(trace).toContain("escapes the Workspace");
+    expect(JSON.stringify(model.doStreamCalls[1]?.prompt)).toContain(
+      "escapes the Workspace",
+    );
+    expect(session.getPendingChangeSet()?.summary).toBe("Safe correction");
+    await expect(readFile(join(workspace, "src", "safe.ts"))).rejects.toThrow();
   });
 });

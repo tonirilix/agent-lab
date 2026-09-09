@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import {
   chmod,
   link,
@@ -28,20 +29,66 @@ type Snapshot = {
   targetCreated?: boolean;
 };
 
+function fingerprint(content: Buffer | string) {
+  return createHash("sha256").update(content).digest("hex");
+}
+
+async function currentFingerprint(path: string) {
+  try {
+    return fingerprint(await readFile(path));
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
 async function removeIfPresent(path: string | undefined, recursive = false) {
   if (path) await rm(path, { force: true, recursive });
 }
 
 async function rollback(snapshots: Snapshot[]) {
+  const failures: string[] = [];
   for (const snapshot of [...snapshots].reverse()) {
-    if (snapshot.targetCreated) await removeIfPresent(snapshot.target);
-    if (snapshot.backupPath) {
-      await removeIfPresent(snapshot.target);
-      await rename(snapshot.backupPath, snapshot.target);
-      snapshot.backupPath = undefined;
+    try {
+      if (snapshot.targetCreated) {
+        const current = await currentFingerprint(snapshot.target);
+        const expected =
+          snapshot.operation.kind === "delete"
+            ? null
+            : fingerprint(snapshot.operation.content);
+        if (current !== null && current !== expected) {
+          throw new Error(
+            "target changed during application; preserving the concurrent content",
+          );
+        }
+        await removeIfPresent(snapshot.target);
+        snapshot.targetCreated = false;
+      }
+      if (snapshot.backupPath) {
+        await link(snapshot.backupPath, snapshot.target);
+        await removeIfPresent(snapshot.backupPath);
+        snapshot.backupPath = undefined;
+      }
+    } catch (error) {
+      failures.push(
+        `${snapshot.operation.path}: ${error instanceof Error ? error.message : String(error)}`,
+      );
     }
-    await removeIfPresent(snapshot.stagedPath);
-    await removeIfPresent(snapshot.transactionDirectory, true);
+    try {
+      await removeIfPresent(snapshot.stagedPath);
+      if (!snapshot.backupPath) {
+        await removeIfPresent(snapshot.transactionDirectory, true);
+      }
+    } catch (error) {
+      failures.push(
+        `${snapshot.operation.path} cleanup: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  if (failures.length) {
+    throw new Error(failures.join("; "));
   }
 }
 
@@ -139,8 +186,14 @@ export function createWorkspaceTransaction(
           const backupPath = resolve(snapshot.transactionDirectory, "backup");
           await rename(snapshot.target, backupPath);
           snapshot.backupPath = backupPath;
+          assertCurrentFingerprint(
+            snapshot.operation,
+            fingerprint(await readFile(backupPath)),
+          );
           if (snapshot.operation.kind === "modify") {
-            await rename(snapshot.stagedPath!, snapshot.target);
+            await link(snapshot.stagedPath!, snapshot.target);
+            snapshot.targetCreated = true;
+            await removeIfPresent(snapshot.stagedPath);
             snapshot.stagedPath = undefined;
           }
           await new Promise<void>((ready) => setImmediate(ready));
@@ -181,7 +234,13 @@ export function createWorkspaceTransaction(
         verified = true;
         return files;
       } catch (error) {
-        await rollback(snapshots);
+        try {
+          await rollback(snapshots);
+        } catch (rollbackError) {
+          throw new Error(
+            `Application failed: ${error instanceof Error ? error.message : String(error)}; rollback also failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`,
+          );
+        }
         throw error;
       } finally {
         if (verified) {
