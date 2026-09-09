@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { useMemo, useState, type ReactNode } from "react";
 import { DefaultChatTransport, isToolUIPart } from "ai";
+import type { AppliedChangeSet } from "../../shared/change-set-contracts";
 import { MessageMarkdown } from "./message-markdown";
 import { changeSetReviewFromPart } from "../lib/change-set-tool-result";
 import { ChangeSetCard } from "./change-set-card";
@@ -65,12 +66,18 @@ export function ChatWorkspace() {
   const [rejectedChangeSets, setRejectedChangeSets] = useState<Set<string>>(
     () => new Set(),
   );
+  const [appliedChangeSets, setAppliedChangeSets] = useState<Set<string>>(
+    () => new Set(),
+  );
   const active = status === "submitted" || status === "streaming";
   const hasPendingChangeSet = messages.some((message) =>
     message.parts.some((part) => {
       if (!isToolUIPart(part)) return false;
       const review = changeSetReviewFromPart(part);
-      return review ? !rejectedChangeSets.has(review.changeSet.id) : false;
+      return review
+        ? !rejectedChangeSets.has(review.changeSet.id) &&
+            !appliedChangeSets.has(review.changeSet.id)
+        : false;
     }),
   );
 
@@ -103,6 +110,15 @@ export function ChatWorkspace() {
     if (feedback) {
       setInput(`I rejected the Change Set. Feedback: ${feedback}`);
     }
+  }
+
+  function handleAppliedChangeSet(result: AppliedChangeSet) {
+    setAppliedChangeSets((current) => new Set(current).add(result.id));
+    setInterrupted(false);
+    void sendMessage(
+      { text: "Application Result: Summarize the verified Change Set." },
+      { body: { completedChangeSetId: result.id } },
+    );
   }
 
   return (
@@ -165,6 +181,7 @@ export function ChatWorkspace() {
                                 toolInput={review.toolInput}
                                 toolOutput={review.toolOutput}
                                 onRejected={handleRejectedChangeSet}
+                                onApplied={handleAppliedChangeSet}
                               />
                             );
                           }

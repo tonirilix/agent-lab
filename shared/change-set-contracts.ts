@@ -45,6 +45,28 @@ export const pendingChangeSetSchema = changeSetProposalSchema.extend({
   warnings: z.array(z.string()),
 });
 
+export const appliedChangeSetSchema = z.object({
+  id: z.string(),
+  summary: z.string(),
+  status: z.literal("verified"),
+  lifecycle: z.tuple([
+    z.literal("proposed"),
+    z.literal("approved"),
+    z.literal("applied"),
+    z.literal("verified"),
+  ]),
+  files: z.array(
+    z.object({
+      kind: z.enum(["create", "modify", "delete"]),
+      path: relativePathSchema,
+      status: z.literal("verified"),
+      actualDiff: z.string(),
+    }),
+  ),
+  actualDiff: z.string(),
+});
+
 export type ChangeOperation = z.infer<typeof changeOperationSchema>;
 export type ChangeSetProposal = z.infer<typeof changeSetProposalSchema>;
 export type PendingChangeSet = z.infer<typeof pendingChangeSetSchema>;
+export type AppliedChangeSet = z.infer<typeof appliedChangeSetSchema>;

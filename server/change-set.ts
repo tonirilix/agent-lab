@@ -1,13 +1,16 @@
 import { createHash } from "node:crypto";
-import { createTwoFilesPatch } from "diff";
 import {
   MAX_CHANGE_SET_BYTES,
   changeSetProposalSchema,
   type ChangeOperation,
   type ChangeSetProposal,
+  type AppliedChangeSet,
   type PendingChangeSet,
 } from "../shared/change-set-contracts.js";
 import type { WorkspaceTools } from "./workspace-tools.js";
+import type { WorkspaceRoot } from "./workspace-root.js";
+import { createChangeSetDiff } from "./change-set-diff.js";
+import { createWorkspaceTransaction } from "./workspace-transaction.js";
 
 export class ChangeSetValidationError extends Error {
   constructor(message: string) {
@@ -29,27 +32,30 @@ async function asChangeSetValidation<T>(
   }
 }
 
-function reviewDiff(
-  operation: ChangeOperation,
-  originalContent: string,
-): string {
-  const resultingContent = operation.kind === "delete" ? "" : operation.content;
-  const beforePath = operation.kind === "create" ? "/dev/null" : `a/${operation.path}`;
-  const afterPath = operation.kind === "delete" ? "/dev/null" : `b/${operation.path}`;
-  return createTwoFilesPatch(
-    beforePath,
-    afterPath,
-    originalContent,
-    resultingContent,
-    "",
-    "",
-    { context: 3 },
-  );
+function preserveTextStyle(original: string, proposed: string) {
+  const newline = original.includes("\r\n") ? "\r\n" : "\n";
+  let normalized = proposed.replace(/\r\n|\r/g, "\n");
+  const originalHasFinalNewline = /\r?\n$/.test(original);
+  if (originalHasFinalNewline && !normalized.endsWith("\n")) {
+    normalized += "\n";
+  } else if (!originalHasFinalNewline && normalized.endsWith("\n")) {
+    normalized = normalized.replace(/\n+$/, "");
+  }
+  return newline === "\r\n" ? normalized.replace(/\n/g, "\r\n") : normalized;
 }
 
-export function createChangeSetService(workspaceTools: WorkspaceTools) {
+export function createChangeSetService(
+  workspaceTools: WorkspaceTools,
+  workspace: WorkspaceRoot,
+) {
   let pendingChangeSet: PendingChangeSet | null = null;
   let preparingChangeSet = false;
+  let applyingChangeSet = false;
+  const completedChangeSets = new Map<string, AppliedChangeSet>();
+  const workspaceTransaction = createWorkspaceTransaction(
+    workspaceTools,
+    workspace,
+  );
 
   return {
     async prepare(candidate: unknown): Promise<PendingChangeSet> {
@@ -71,6 +77,7 @@ export function createChangeSetService(workspaceTools: WorkspaceTools) {
         const seenPaths = new Set<string>();
         let proposedBytes = 0;
         const files: PendingChangeSet["files"] = [];
+        const validatedOperations: ChangeOperation[] = [];
 
         for (const operation of proposal.operations) {
           if (seenPaths.has(operation.path)) {
@@ -97,6 +104,10 @@ export function createChangeSetService(workspaceTools: WorkspaceTools) {
               );
             }
             if (operation.kind === "modify") {
+              operation.content = preserveTextStyle(
+                originalContent,
+                operation.content,
+              );
               proposedBytes += await asChangeSetValidation(
                 () => workspaceTools.validateProposedContent(operation).sizeBytes,
               );
@@ -111,16 +122,19 @@ export function createChangeSetService(workspaceTools: WorkspaceTools) {
           files.push({
             kind: operation.kind,
             path: operation.path,
-            diff: reviewDiff(operation, originalContent),
+            diff: createChangeSetDiff(operation, originalContent),
           });
+          validatedOperations.push(operation);
         }
 
+        const validatedProposal = { ...proposal, operations: validatedOperations };
+
         const id = createHash("sha256")
-          .update(JSON.stringify({ proposal, files }))
+          .update(JSON.stringify({ proposal: validatedProposal, files }))
           .digest("hex")
           .slice(0, 16);
         pendingChangeSet = {
-          ...proposal,
+          ...validatedProposal,
           id,
           status: "pending",
           files,
@@ -150,6 +164,52 @@ export function createChangeSetService(workspaceTools: WorkspaceTools) {
       const rejected = pendingChangeSet;
       pendingChangeSet = null;
       return { id: rejected.id, status: "rejected" as const, feedback };
+    },
+
+    async approve(id: string): Promise<AppliedChangeSet> {
+      if (
+        !pendingChangeSet ||
+        pendingChangeSet.id !== id ||
+        applyingChangeSet
+      ) {
+        throw new ChangeSetValidationError(
+          applyingChangeSet
+            ? "A Change Set is already being applied."
+            : "Pending Change Set does not match this Approval.",
+        );
+      }
+      applyingChangeSet = true;
+      const approved = pendingChangeSet;
+
+      try {
+        const files = await workspaceTransaction.apply(
+          approved.id,
+          approved.operations,
+        );
+        const result: AppliedChangeSet = {
+          id: approved.id,
+          summary: approved.summary,
+          status: "verified",
+          lifecycle: ["proposed", "approved", "applied", "verified"],
+          files,
+          actualDiff: files.map((file) => file.actualDiff).join("\n"),
+        };
+        pendingChangeSet = null;
+        completedChangeSets.set(result.id, result);
+        return result;
+      } catch (error) {
+        throw error instanceof ChangeSetValidationError
+          ? error
+          : new ChangeSetValidationError(
+              `Change Set application failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+      } finally {
+        applyingChangeSet = false;
+      }
+    },
+
+    getCompleted(id: string) {
+      return completedChangeSets.get(id) ?? null;
     },
   };
 }

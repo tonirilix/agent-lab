@@ -96,7 +96,7 @@ export async function createAgentSession({
   workspace: WorkspaceRoot;
 }) {
   const workspaceTools = await createWorkspaceTools(workspace);
-  const changeSets = createChangeSetService(workspaceTools);
+  const changeSets = createChangeSetService(workspaceTools, workspace);
   let activeTurn = false;
 
   const readOnlyTools = {
@@ -159,13 +159,24 @@ export async function createAgentSession({
     async startTurn(
       messages: UIMessage[],
       abortSignal?: AbortSignal,
-      options: { proposalRequested?: boolean } = {},
+      options: {
+        proposalRequested?: boolean;
+        completedChangeSetId?: string;
+      } = {},
     ) {
       if (activeTurn) throw new ActiveAgentTurnError();
       activeTurn = true;
       let proposalCreatedThisTurn = false;
 
       try {
+        const completedChangeSet = options.completedChangeSetId
+          ? changeSets.getCompleted(options.completedChangeSetId)
+          : null;
+        if (options.completedChangeSetId && !completedChangeSet) {
+          throw new ChangeSetValidationError(
+            "Verified Change Set result does not match this Agent Turn.",
+          );
+        }
         const tools = options.proposalRequested
           ? {
               ...readOnlyTools,
@@ -201,10 +212,15 @@ export async function createAgentSession({
           instructions: [
             "You are the Coding Agent in Agent Lab.",
             "Use the read-only Workspace Tools to investigate code when needed.",
-            "Never claim that you changed files: this Agent Turn has no write capability.",
+            completedChangeSet
+              ? "Agent Lab already applied and verified the user-approved Change Set. Describe that result accurately without implying an unverified action."
+              : "Never claim that you changed files: this Agent Turn has no write capability.",
             options.proposalRequested
               ? "The user made a Proposal Request. After enough inspection, call proposeChangeSet once with the complete Change Set. This prepares review data only."
               : "No Proposal Request was made. You cannot prepare a Change Set in this Agent Turn.",
+            completedChangeSet
+              ? `The user approved a Change Set that Agent Lab applied and verified. Base your final summary on this authoritative application result: ${JSON.stringify(completedChangeSet)}`
+              : "No verified application result is attached to this Agent Turn.",
             "Be concise and explain conclusions using the evidence you inspected.",
           ].join(" "),
           messages: await convertToModelMessages(messages),
@@ -233,7 +249,18 @@ export async function createAgentSession({
     },
 
     rejectChangeSet(id: string, feedback?: string) {
+      if (activeTurn) throw new ActiveAgentTurnError();
       return changeSets.reject(id, feedback);
+    },
+
+    async approveChangeSet(id: string) {
+      if (activeTurn) throw new ActiveAgentTurnError();
+      activeTurn = true;
+      try {
+        return await changeSets.approve(id);
+      } finally {
+        activeTurn = false;
+      }
     },
   };
 }

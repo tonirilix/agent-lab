@@ -43,7 +43,11 @@ export function createApp(
       );
     }
 
-    let body: { messages?: UIMessage[]; proposalRequested?: boolean };
+    let body: {
+      messages?: UIMessage[];
+      proposalRequested?: boolean;
+      completedChangeSetId?: string;
+    };
     try {
       body = (await context.req.json()) as { messages?: UIMessage[] };
     } catch {
@@ -58,7 +62,10 @@ export function createApp(
         stream: await (await agentSession!).startTurn(
           body.messages,
           context.req.raw.signal,
-          { proposalRequested: body.proposalRequested === true },
+          {
+            proposalRequested: body.proposalRequested === true,
+            completedChangeSetId: body.completedChangeSetId,
+          },
         ),
       });
     } catch (error) {
@@ -88,6 +95,22 @@ export function createApp(
           context.req.param("id"),
           body.feedback,
         ),
+      );
+    } catch (error) {
+      if (error instanceof Error) {
+        return context.json({ error: error.message }, 409);
+      }
+      throw error;
+    }
+  });
+
+  app.post("/api/change-sets/:id/approve", async (context) => {
+    if (!agentSession) {
+      return context.json({ error: "Agent session is unavailable." }, 503);
+    }
+    try {
+      return context.json(
+        await (await agentSession).approveChangeSet(context.req.param("id")),
       );
     } catch (error) {
       if (error instanceof Error) {

@@ -44,7 +44,10 @@ describe("Change Set review", () => {
       "utf8",
     );
     const tools = await createWorkspaceTools(await resolveWorkspaceRoot(workspace));
-    const changeSets = createChangeSetService(tools);
+    const changeSets = createChangeSetService(
+      tools,
+      await resolveWorkspaceRoot(workspace),
+    );
 
     const pending = await changeSets.prepare({
       summary: "Update the task implementation",
@@ -88,7 +91,10 @@ describe("Change Set review", () => {
     const workspace = await createWorkspace();
     const original = await readFile(join(workspace, "src", "modify.ts"), "utf8");
     const tools = await createWorkspaceTools(await resolveWorkspaceRoot(workspace));
-    const changeSets = createChangeSetService(tools);
+    const changeSets = createChangeSetService(
+      tools,
+      await resolveWorkspaceRoot(workspace),
+    );
 
     await expect(
       changeSets.prepare({

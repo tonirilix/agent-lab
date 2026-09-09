@@ -6,10 +6,11 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
+import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { simulateReadableStream } from "ai";
+import { simulateReadableStream, type UIMessage } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { afterEach, describe, expect, it } from "vitest";
 import { createAgentSession, MAX_AGENT_STEPS } from "./agent-session.js";
@@ -125,6 +126,401 @@ afterEach(async () => {
 });
 
 describe("Agent session", () => {
+  it("applies an approved Change Set atomically, verifies it, and returns the result to the final model turn", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agent-lab-approval-"));
+    temporaryWorkspaces.push(workspace);
+    await mkdir(join(workspace, "src"));
+    const originalModify =
+      "export const value = 1;\r\nexport const mode = 'old';";
+    const originalDelete = "export const obsolete = true;\n";
+    await Promise.all([
+      writeFile(join(workspace, "src", "modify.ts"), originalModify),
+      writeFile(join(workspace, "src", "delete.ts"), originalDelete),
+    ]);
+    let modelCall = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        modelCall += 1;
+        if (modelCall === 1) {
+          return {
+            stream: simulateReadableStream({
+              chunks: [
+                {
+                  type: "tool-call" as const,
+                  toolCallId: "inspect-before-approval",
+                  toolName: "readFile",
+                  input: JSON.stringify({ path: "src/modify.ts" }),
+                },
+                {
+                  type: "finish" as const,
+                  finishReason: {
+                    unified: "tool-calls" as const,
+                    raw: undefined,
+                  },
+                  logprobs: undefined,
+                  usage,
+                },
+              ],
+            }),
+          };
+        }
+        if (modelCall === 2) {
+          return {
+            stream: simulateReadableStream({
+              chunks: [
+                { type: "text-start" as const, id: "discussion" },
+                {
+                  type: "text-delta" as const,
+                  id: "discussion",
+                  delta: "I inspected the requested files.",
+                },
+                { type: "text-end" as const, id: "discussion" },
+                {
+                  type: "finish" as const,
+                  finishReason: { unified: "stop" as const, raw: undefined },
+                  logprobs: undefined,
+                  usage,
+                },
+              ],
+            }),
+          };
+        }
+        if (modelCall === 3) {
+          return {
+            stream: simulateReadableStream({
+              chunks: [
+                {
+                  type: "tool-call" as const,
+                  toolCallId: "proposal-approval",
+                  toolName: "proposeChangeSet",
+                  input: JSON.stringify({
+                    summary: "Apply all operation types",
+                    operations: [
+                      {
+                        kind: "create",
+                        path: "src/create.ts",
+                        content: "export const created = true;\n",
+                      },
+                      {
+                        kind: "modify",
+                        path: "src/modify.ts",
+                        originalFingerprint: fingerprint(originalModify),
+                        content:
+                          "export const value = 2;\nexport const mode = 'new';\n",
+                      },
+                      {
+                        kind: "delete",
+                        path: "src/delete.ts",
+                        originalFingerprint: fingerprint(originalDelete),
+                      },
+                    ],
+                  }),
+                },
+                {
+                  type: "finish" as const,
+                  finishReason: {
+                    unified: "tool-calls" as const,
+                    raw: undefined,
+                  },
+                  logprobs: undefined,
+                  usage,
+                },
+              ],
+            }),
+          };
+        }
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              { type: "text-start" as const, id: "final" },
+              {
+                type: "text-delta" as const,
+                id: "final",
+                delta: "The approved Change Set was applied and verified.",
+              },
+              { type: "text-end" as const, id: "final" },
+              {
+                type: "finish" as const,
+                finishReason: { unified: "stop" as const, raw: undefined },
+                logprobs: undefined,
+                usage,
+              },
+            ],
+          }),
+        };
+      },
+    });
+    const session = await createAgentSession({
+      model,
+      workspace: await resolveWorkspaceRoot(workspace),
+    });
+
+    const inspectionTrace = JSON.stringify(
+      await collectStream(
+        await session.startTurn([
+          {
+            id: "discussion",
+            role: "user",
+            parts: [{ type: "text", text: "Inspect the files." }],
+          },
+        ]),
+      ),
+    );
+    expect(inspectionTrace).toContain('"toolName":"readFile"');
+    expect(inspectionTrace).toContain("export const value = 1");
+    await collectStream(
+      await session.startTurn(
+        [
+          {
+            id: "proposal",
+            role: "user",
+            parts: [{ type: "text", text: "Prepare the Change Set." }],
+          },
+        ],
+        undefined,
+        { proposalRequested: true },
+      ),
+    );
+    const pending = session.getPendingChangeSet()!;
+
+    const applied = await session.approveChangeSet(pending.id);
+
+    expect(applied.status).toBe("verified");
+    expect(applied.lifecycle).toEqual([
+      "proposed",
+      "approved",
+      "applied",
+      "verified",
+    ]);
+    expect(applied.files.map((file) => [file.kind, file.path, file.status])).toEqual([
+      ["create", "src/create.ts", "verified"],
+      ["modify", "src/modify.ts", "verified"],
+      ["delete", "src/delete.ts", "verified"],
+    ]);
+    expect(applied.actualDiff).toContain("+++ b/src/create.ts");
+    expect(applied.actualDiff).toContain("--- a/src/delete.ts");
+    expect(await readFile(join(workspace, "src", "create.ts"), "utf8")).toBe(
+      "export const created = true;\n",
+    );
+    expect(await readFile(join(workspace, "src", "modify.ts"), "utf8")).toBe(
+      "export const value = 2;\r\nexport const mode = 'new';",
+    );
+    await expect(readFile(join(workspace, "src", "delete.ts"))).rejects.toThrow();
+
+    const finalTrace = JSON.stringify(
+      await collectStream(
+        await session.startTurn(
+          [
+            {
+              id: "final",
+              role: "user",
+              parts: [{ type: "text", text: "Summarize the applied result." }],
+            },
+          ],
+          undefined,
+          { completedChangeSetId: pending.id },
+        ),
+      ),
+    );
+    expect(finalTrace).toContain("applied and verified");
+    expect(JSON.stringify(model.doStreamCalls[3]?.prompt)).toContain(
+      '\\"status\\":\\"verified\\"',
+    );
+  });
+
+  it("restores every affected path when a later operation fails during application", async () => {
+    const workspace = await workspaceWithSource();
+    const original = "export const tasks = ['learn'];\n";
+    const spacerPaths = Array.from(
+      { length: 12 },
+      (_, index) => `src/spacer-${index}.ts`,
+    );
+    await Promise.all(
+      spacerPaths.map((path, index) =>
+        writeFile(join(workspace, path), `export const spacer = ${index};\n`),
+      ),
+    );
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: simulateReadableStream({
+          chunks: [
+            {
+              type: "tool-call" as const,
+              toolCallId: "rollback-proposal",
+              toolName: "proposeChangeSet",
+              input: JSON.stringify({
+                summary: "Exercise rollback",
+                operations: [
+                  {
+                    kind: "modify",
+                    path: "src/tasks.ts",
+                    originalFingerprint: fingerprint(original),
+                    content: "export const tasks = ['changed'];\n",
+                  },
+                  ...spacerPaths.map((path, index) => ({
+                    kind: "delete",
+                    path,
+                    originalFingerprint: fingerprint(
+                      `export const spacer = ${index};\n`,
+                    ),
+                  })),
+                  {
+                    kind: "create",
+                    path: "src/collision.ts",
+                    content: "export const agent = true;\n",
+                  },
+                ],
+              }),
+            },
+            {
+              type: "finish" as const,
+              finishReason: { unified: "tool-calls" as const, raw: undefined },
+              logprobs: undefined,
+              usage,
+            },
+          ],
+        }),
+      }),
+    });
+    const session = await createAgentSession({
+      model,
+      workspace: await resolveWorkspaceRoot(workspace),
+    });
+    await collectStream(
+      await session.startTurn(
+        [
+          {
+            id: "proposal",
+            role: "user",
+            parts: [{ type: "text", text: "Prepare the Change Set." }],
+          },
+        ],
+        undefined,
+        { proposalRequested: true },
+      ),
+    );
+    const pending = session.getPendingChangeSet()!;
+    const collisionPath = join(workspace, "src", "collision.ts");
+    const competingWriter = spawn(process.execPath, [
+      "-e",
+      [
+        "const fs = require('node:fs');",
+        "const [watched, target] = process.argv.slice(1);",
+        "process.stdout.write('ready\\n');",
+        "const deadline = Date.now() + 5000;",
+        "while (Date.now() < deadline) {",
+        "  try {",
+        "    if (fs.readFileSync(watched, 'utf8').includes('changed')) {",
+        "      fs.writeFileSync(target, 'export const user = true;\\n', { flag: 'wx' });",
+        "      process.exit(0);",
+        "    }",
+        "  } catch {}",
+        "}",
+        "process.exit(2);",
+      ].join("\n"),
+      join(workspace, "src", "tasks.ts"),
+      collisionPath,
+    ]);
+    await new Promise<void>((resolveReady, rejectReady) => {
+      competingWriter.stdout.once("data", () => resolveReady());
+      competingWriter.once("error", rejectReady);
+    });
+
+    try {
+      await expect(session.approveChangeSet(pending.id)).rejects.toThrow(
+        "application failed",
+      );
+    } finally {
+      competingWriter.kill();
+    }
+
+    expect(await readFile(join(workspace, "src", "tasks.ts"), "utf8")).toBe(
+      original,
+    );
+    expect(await readFile(collisionPath, "utf8")).toBe(
+      "export const user = true;\n",
+    );
+    expect(await readFile(join(workspace, spacerPaths[0]!), "utf8")).toBe(
+      "export const spacer = 0;\n",
+    );
+  });
+
+  it("invalidates Approval when a rejected Change Set is revised", async () => {
+    const workspace = await workspaceWithSource();
+    const original = "export const tasks = ['learn'];\n";
+    let proposalNumber = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        proposalNumber += 1;
+        return {
+          stream: simulateReadableStream({
+            chunks: [
+              {
+                type: "tool-call" as const,
+                toolCallId: `revision-${proposalNumber}`,
+                toolName: "proposeChangeSet",
+                input: JSON.stringify({
+                  summary: `Revision ${proposalNumber}`,
+                  operations: [
+                    {
+                      kind: "modify",
+                      path: "src/tasks.ts",
+                      originalFingerprint: fingerprint(original),
+                      content: `export const tasks = ['revision-${proposalNumber}'];\n`,
+                    },
+                  ],
+                }),
+              },
+              {
+                type: "finish" as const,
+                finishReason: { unified: "tool-calls" as const, raw: undefined },
+                logprobs: undefined,
+                usage,
+              },
+            ],
+          }),
+        };
+      },
+    });
+    const session = await createAgentSession({
+      model,
+      workspace: await resolveWorkspaceRoot(workspace),
+    });
+    const proposalMessage: UIMessage[] = [
+      {
+        id: "proposal",
+        role: "user",
+        parts: [{ type: "text", text: "Prepare a revision." }],
+      },
+    ];
+
+    await collectStream(
+      await session.startTurn(proposalMessage, undefined, {
+        proposalRequested: true,
+      }),
+    );
+    const first = session.getPendingChangeSet()!;
+    await session.rejectChangeSet(first.id, "Revise it.");
+    await collectStream(
+      await session.startTurn(proposalMessage, undefined, {
+        proposalRequested: true,
+      }),
+    );
+    const revised = session.getPendingChangeSet()!;
+
+    expect(revised.id).not.toBe(first.id);
+    await expect(session.approveChangeSet(first.id)).rejects.toThrow(
+      "does not match",
+    );
+    expect(await readFile(join(workspace, "src", "tasks.ts"), "utf8")).toBe(
+      original,
+    );
+    await session.approveChangeSet(revised.id);
+    expect(await readFile(join(workspace, "src", "tasks.ts"), "utf8")).toBe(
+      "export const tasks = ['revision-2'];\n",
+    );
+  });
+
   it("executes a Workspace Tool and returns its exact result to the model and Tool Trace", async () => {
     const workspace = await workspaceWithSource();
     let modelStep = 0;
