@@ -150,24 +150,27 @@ export function ChatWorkspace({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" aria-busy={active}>
-      <MessageScrollerProvider autoScroll defaultScrollPosition="end">
+      {messages.length === 0 ? (
+        <div className="grid flex-1 place-items-center px-5 py-8 text-center">
+          <div className="max-w-md">
+            <Bot className="mx-auto size-9 text-muted-foreground" />
+            <h2 className="mt-5 text-xl font-semibold">
+              What are we learning today?
+            </h2>
+            <p className="mt-2 text-sm leading-6 text-muted-foreground">
+              Ask the Coding Agent to inspect the Example Workspace, or discuss
+              a change before making a proposal.
+            </p>
+          </div>
+        </div>
+      ) : (
+      <MessageScrollerProvider defaultScrollPosition="last-anchor">
         <MessageScroller className="flex-1">
           <MessageScrollerViewport>
-            <MessageScrollerContent className="mx-auto w-full max-w-3xl px-5 py-8 sm:px-8">
-              {messages.length === 0 ? (
-                <div className="grid min-h-[45vh] place-items-center text-center">
-                  <div className="max-w-md">
-                    <Bot className="mx-auto size-9 text-muted-foreground" />
-                    <h2 className="mt-5 text-xl font-semibold">
-                      What are we learning today?
-                    </h2>
-                    <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                      Ask the Coding Agent to inspect the Example Workspace, or
-                      discuss a change before making a proposal.
-                    </p>
-                  </div>
-                </div>
-              ) : null}
+            <MessageScrollerContent
+              aria-busy={active}
+              className="mx-auto w-full max-w-3xl px-5 py-8 sm:px-8"
+            >
               {messages.map((message) => {
                 const diagnostics = diagnosticsFromMetadata(message.metadata);
                 return (
@@ -229,39 +232,50 @@ export function ChatWorkspace({
                 );
               })}
               {status === "submitted" ? (
-                <div
-                  className="flex items-center gap-2 text-sm text-muted-foreground"
-                  role="status"
-                >
-                  <span className="size-2 animate-pulse rounded-full bg-muted-foreground" />
-                  OpenAI is thinking…
-                </div>
+                <MessageScrollerItem messageId="status-thinking">
+                  <div
+                    className="flex items-center gap-2 text-sm text-muted-foreground"
+                    role="status"
+                  >
+                    <span className="size-2 animate-pulse rounded-full bg-muted-foreground" />
+                    OpenAI is thinking…
+                  </div>
+                </MessageScrollerItem>
               ) : null}
               {interrupted ? (
-                <TurnNotice onRetry={retry}>
-                  The turn was stopped. Any partial response is preserved.
-                </TurnNotice>
+                <MessageScrollerItem messageId="status-interrupted">
+                  <TurnNotice onRetry={retry}>
+                    The turn was stopped. Any partial response is preserved.
+                  </TurnNotice>
+                </MessageScrollerItem>
               ) : null}
               {error ? (
-                <TurnNotice destructive onRetry={retry}>
-                  <span className="inline-flex items-center gap-2">
-                    <AlertCircle className="size-4" /> {error.message}
-                  </span>
-                </TurnNotice>
+                <MessageScrollerItem messageId="status-error">
+                  <TurnNotice destructive onRetry={retry}>
+                    <span className="inline-flex items-center gap-2">
+                      <AlertCircle className="size-4" /> {error.message}
+                    </span>
+                  </TurnNotice>
+                </MessageScrollerItem>
               ) : null}
               {terminalDiagnostics ? (
-                <TurnDiagnosticsFooter diagnostics={terminalDiagnostics} />
+                <MessageScrollerItem messageId="status-diagnostics">
+                  <TurnDiagnosticsFooter diagnostics={terminalDiagnostics} />
+                </MessageScrollerItem>
               ) : null}
               {contextWarning ? (
-                <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm" role="status">
-                  This transcript is becoming large. Consider starting a new session before another complex Agent Turn.
-                </div>
+                <MessageScrollerItem messageId="status-context-warning">
+                  <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm" role="status">
+                    This transcript is becoming large. Consider starting a new session before another complex Agent Turn.
+                  </div>
+                </MessageScrollerItem>
               ) : null}
             </MessageScrollerContent>
           </MessageScrollerViewport>
           <MessageScrollerButton />
         </MessageScroller>
       </MessageScrollerProvider>
+      )}
 
       <form
         className="border-t border-border bg-background/90 p-4 backdrop-blur sm:px-8"
