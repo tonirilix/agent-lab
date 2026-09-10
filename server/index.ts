@@ -2,6 +2,10 @@ import { serve } from "@hono/node-server";
 import { resolve } from "node:path";
 import { createApp } from "./app.js";
 import { resolveAgentConfiguration } from "./config.js";
+import { describeEnvironmentFile, loadEnvironmentFile } from "./env.js";
+
+// Load `.env` before reading any configuration. Existing shell variables win.
+console.log(describeEnvironmentFile(loadEnvironmentFile()));
 
 function readArgument(name: string): string | undefined {
   const index = process.argv.indexOf(`--${name}`);

@@ -17,9 +17,11 @@ From a fresh checkout:
 ```bash
 corepack enable
 pnpm install --frozen-lockfile
-export OPENAI_API_KEY="your-key"
+cp .env.example .env
 pnpm dev -- --workspace examples/task-list
 ```
+
+Put your key in `.env` as `OPENAI_API_KEY=...`. The server reads `.env` from the project root at startup and prints which variable names it loaded, never their values. Variables already exported in your shell take precedence over the file, so `export OPENAI_API_KEY="your-key"` still works without a `.env`. Restart the dev command after editing `.env`.
 
 Open <http://127.0.0.1:5173> or <http://localhost:5173>. One command starts Vite and the local Hono server. If `OPENAI_API_KEY` is absent, the UI opens in a safe setup state and no Agent Turn can start.
 
@@ -30,13 +32,14 @@ The default model is `gpt-5.6-sol`. Set `OPENAI_MODEL` to another model availabl
 ```bash
 pnpm install --frozen-lockfile
 pnpm build
-export OPENAI_API_KEY="your-key"
 pnpm start -- --workspace examples/task-list
 ```
 
+The production server reads the same `.env` file. All supported variables are documented in `.env.example`.
+
 Open <http://127.0.0.1:8787>. A single Node process serves both the built client and `/api` routes and binds only to loopback. Agent and Change Set requests must carry the expected browser origin. `AGENT_LAB_PORT` changes the production port; `AGENT_LAB_BROWSER_ORIGIN` can explicitly override the expected origin when needed.
 
-Keep credentials in the server environment. Never put an API key in client code, a prompt, or the Workspace.
+Keep credentials in the server environment or in the Git-ignored `.env` file. Never put an API key in client code, a prompt, or the Workspace, and never give a secret a `VITE_` prefix, because Vite exposes those variables to the browser.
 
 ## How the pieces fit together
 
