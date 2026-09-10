@@ -11,6 +11,20 @@ const configuredAgentSchema = z.object({
       dirty: z.boolean(),
     })
     .nullable(),
+  agent: z.object({
+    instructions: z.array(z.string()),
+    turnInstructions: z.array(z.string()),
+    tools: z.array(z.string()),
+    safetyLimits: z.object({
+      maxSteps: z.number(),
+      maxFileBytes: z.number(),
+      maxSearchMatches: z.number(),
+      maxChangeOperations: z.number(),
+      maxChangeSetBytes: z.number(),
+      contextWarningCharacters: z.number(),
+    }),
+    telemetry: z.literal(false),
+  }),
 });
 
 const invalidWorkspaceSchema = z.object({

@@ -12,6 +12,7 @@ import {
 } from "../shared/contracts";
 import { Badge } from "./components/ui/badge";
 import { ChatWorkspace } from "./components/chat-workspace";
+import { AgentConfigurationSheet } from "./components/agent-configuration-sheet";
 
 function basename(path: string) {
   return path.split("/").filter(Boolean).at(-1) ?? path;
@@ -89,6 +90,7 @@ export function App() {
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <AgentConfigurationSheet config={config} />
             <Badge>
               {config.provider} · {config.model}
             </Badge>
@@ -142,7 +144,12 @@ export function App() {
               </div>
             </div>
           ) : (
-            <ChatWorkspace />
+            <ChatWorkspace
+              model={config.model}
+              contextWarningCharacters={
+                config.agent.safetyLimits.contextWarningCharacters
+              }
+            />
           )}
         </div>
       </section>

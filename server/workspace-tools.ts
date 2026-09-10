@@ -5,11 +5,14 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path
 import { promisify } from "node:util";
 import ignore, { type Ignore } from "ignore";
 import type { WorkspaceRoot } from "./workspace-root.js";
+import {
+  MAX_FILE_BYTES,
+  MAX_SEARCH_MATCHES,
+} from "../shared/agent-policy.js";
 
 const execFileAsync = promisify(execFile);
 
-export const MAX_FILE_BYTES = 256 * 1024;
-export const MAX_SEARCH_MATCHES = 200;
+export { MAX_FILE_BYTES, MAX_SEARCH_MATCHES } from "../shared/agent-policy.js";
 const MAX_LISTED_FILES = 1_000;
 const MAX_CANDIDATE_FILES = 5_000;
 const MAX_MATCH_TEXT_LENGTH = 500;

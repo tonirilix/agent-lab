@@ -23,7 +23,11 @@ export function createApp(
   const model = dependencies.model ?? createConfiguredModel(config);
   const agentSession =
     model && config.status !== "invalid-workspace"
-      ? createAgentSession({ model, workspace: config.workspace })
+      ? createAgentSession({
+          model,
+          modelName: config.model,
+          workspace: config.workspace,
+        })
       : null;
 
   app.get("/api/config", (context) =>

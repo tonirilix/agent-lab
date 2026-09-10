@@ -5,6 +5,7 @@ import {
   type PublicAgentConfiguration,
 } from "../shared/contracts.js";
 import { resolveWorkspaceRoot, type WorkspaceRoot } from "./workspace-root.js";
+import { PUBLIC_AGENT_POLICY } from "../shared/agent-policy.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -106,6 +107,7 @@ export function publicAgentConfiguration(
           provider: config.provider,
           model: config.model,
           git: config.git,
+          agent: PUBLIC_AGENT_POLICY,
         };
 
   return publicAgentConfigurationSchema.parse(candidate);

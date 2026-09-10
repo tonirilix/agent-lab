@@ -3,7 +3,6 @@ import {
   isStepCount,
   jsonSchema,
   streamText,
-  toUIMessageStream,
   tool,
   type LanguageModel,
   type UIMessage,
@@ -20,8 +19,14 @@ import {
   createWorkspaceTools,
 } from "./workspace-tools.js";
 import type { WorkspaceRoot } from "./workspace-root.js";
+import {
+  BASE_AGENT_INSTRUCTIONS,
+  CONTEXT_WARNING_CHARACTERS,
+  MAX_AGENT_STEPS,
+} from "../shared/agent-policy.js";
+import { createDiagnosticUIStream } from "./turn-diagnostics.js";
 
-export const MAX_AGENT_STEPS = 12;
+export { MAX_AGENT_STEPS } from "../shared/agent-policy.js";
 const MAX_TOOL_PATH_LENGTH = 4_096;
 const MAX_SEARCH_QUERY_LENGTH = 1_000;
 
@@ -90,9 +95,11 @@ function releaseWhenFinished<T>(
 
 export async function createAgentSession({
   model,
+  modelName,
   workspace,
 }: {
   model: LanguageModel;
+  modelName?: string;
   workspace: WorkspaceRoot;
 }) {
   const workspaceTools = await createWorkspaceTools(workspace);
@@ -166,6 +173,7 @@ export async function createAgentSession({
     ) {
       if (activeTurn) throw new ActiveAgentTurnError();
       activeTurn = true;
+      const startedAt = Date.now();
       let proposalCreatedThisTurn = false;
 
       try {
@@ -210,8 +218,7 @@ export async function createAgentSession({
         const result = streamText({
           model,
           instructions: [
-            "You are the Coding Agent in Agent Lab.",
-            "Use the read-only Workspace Tools to investigate code when needed.",
+            ...BASE_AGENT_INSTRUCTIONS.slice(0, 2),
             completedChangeSet
               ? "Agent Lab already applied and verified the user-approved Change Set. Describe that result accurately without implying an unverified action."
               : "Never claim that you changed files: this Agent Turn has no write capability.",
@@ -221,7 +228,7 @@ export async function createAgentSession({
             completedChangeSet
               ? `The user approved a Change Set that Agent Lab applied and verified. Base your final summary on this authoritative application result: ${JSON.stringify(completedChangeSet)}`
               : "No verified application result is attached to this Agent Turn.",
-            "Be concise and explain conclusions using the evidence you inspected.",
+            ...BASE_AGENT_INSTRUCTIONS.slice(2),
           ].join(" "),
           messages: await convertToModelMessages(messages),
           tools,
@@ -233,7 +240,14 @@ export async function createAgentSession({
         });
 
         return releaseWhenFinished(
-          toUIMessageStream({ stream: result.stream }),
+          createDiagnosticUIStream({
+            stream: result.stream,
+            model:
+              modelName ?? (typeof model === "string" ? model : model.modelId),
+            contextWarning:
+              JSON.stringify(messages).length >= CONTEXT_WARNING_CHARACTERS,
+            startedAt,
+          }),
           () => {
             activeTurn = false;
           },

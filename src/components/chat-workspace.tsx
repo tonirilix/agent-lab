@@ -11,6 +11,11 @@ import {
 import { useMemo, useState, type ReactNode } from "react";
 import { DefaultChatTransport, isToolUIPart } from "ai";
 import type { AppliedChangeSet } from "../../shared/change-set-contracts";
+import {
+  turnDiagnosticsSchema,
+  type AgentUIMessage,
+} from "../../shared/agent-messages";
+import { useTurnDiagnostics } from "../hooks/use-turn-diagnostics";
 import { MessageMarkdown } from "./message-markdown";
 import { changeSetReviewFromPart } from "../lib/change-set-tool-result";
 import { ChangeSetCard } from "./change-set-card";
@@ -26,6 +31,7 @@ import {
   MessageScrollerViewport,
 } from "./ui/message-scroller";
 import { Textarea } from "./ui/textarea";
+import { TurnDiagnosticsFooter } from "./turn-diagnostics-footer";
 
 function TurnNotice({
   children,
@@ -53,12 +59,23 @@ function TurnNotice({
   );
 }
 
-export function ChatWorkspace() {
+function diagnosticsFromMetadata(metadata: unknown) {
+  const parsed = turnDiagnosticsSchema.safeParse(metadata);
+  return parsed.success ? parsed.data : null;
+}
+
+export function ChatWorkspace({
+  model,
+  contextWarningCharacters,
+}: {
+  model: string;
+  contextWarningCharacters: number;
+}) {
   const transport = useMemo(
     () => new DefaultChatTransport({ api: "/api/chat" }),
     [],
   );
-  const { messages, sendMessage, status, stop, regenerate, error } = useChat({
+  const { messages, sendMessage, status, stop, regenerate, error } = useChat<AgentUIMessage>({
     transport,
   });
   const [input, setInput] = useState("");
@@ -70,6 +87,12 @@ export function ChatWorkspace() {
     () => new Set(),
   );
   const active = status === "submitted" || status === "streaming";
+  const {
+    beginTurn,
+    contextWarning,
+    finishLocally,
+    terminalDiagnostics,
+  } = useTurnDiagnostics({ contextWarningCharacters, error, messages, model });
   const hasPendingChangeSet = messages.some((message) =>
     message.parts.some((part) => {
       if (!isToolUIPart(part)) return false;
@@ -85,18 +108,21 @@ export function ChatWorkspace() {
     const text = input.trim();
     if (!text || active) return;
     setInterrupted(false);
+    beginTurn();
     setInput("");
     void sendMessage({ text });
   }
 
   function retry() {
     setInterrupted(false);
+    beginTurn("regenerate");
     void regenerate();
   }
 
   function requestProposal() {
     if (active || hasPendingChangeSet || messages.length === 0) return;
     setInterrupted(false);
+    beginTurn();
     void sendMessage(
       {
         text: "Proposal Request: Prepare one Change Set from our discussion for review.",
@@ -115,6 +141,7 @@ export function ChatWorkspace() {
   function handleAppliedChangeSet(result: AppliedChangeSet) {
     setAppliedChangeSets((current) => new Set(current).add(result.id));
     setInterrupted(false);
+    beginTurn();
     void sendMessage(
       { text: "Application Result: Summarize the verified Change Set." },
       { body: { completedChangeSetId: result.id } },
@@ -141,7 +168,9 @@ export function ChatWorkspace() {
                   </div>
                 </div>
               ) : null}
-              {messages.map((message) => (
+              {messages.map((message) => {
+                const diagnostics = diagnosticsFromMetadata(message.metadata);
+                return (
                 <MessageScrollerItem
                   key={message.id}
                   messageId={message.id}
@@ -189,10 +218,16 @@ export function ChatWorkspace() {
                         }
                         return null;
                       })}
+                      {message.role === "assistant" && diagnostics ? (
+                        <TurnDiagnosticsFooter
+                          diagnostics={diagnostics}
+                        />
+                      ) : null}
                     </MessageContent>
                   </Message>
                 </MessageScrollerItem>
-              ))}
+                );
+              })}
               {status === "submitted" ? (
                 <div
                   className="flex items-center gap-2 text-sm text-muted-foreground"
@@ -213,6 +248,14 @@ export function ChatWorkspace() {
                     <AlertCircle className="size-4" /> {error.message}
                   </span>
                 </TurnNotice>
+              ) : null}
+              {terminalDiagnostics ? (
+                <TurnDiagnosticsFooter diagnostics={terminalDiagnostics} />
+              ) : null}
+              {contextWarning ? (
+                <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm" role="status">
+                  This transcript is becoming large. Consider starting a new session before another complex Agent Turn.
+                </div>
               ) : null}
             </MessageScrollerContent>
           </MessageScrollerViewport>
@@ -249,6 +292,7 @@ export function ChatWorkspace() {
               variant="outline"
               onClick={() => {
                 setInterrupted(true);
+                finishLocally("stopped");
                 void stop();
               }}
               aria-label="Stop Agent Turn"

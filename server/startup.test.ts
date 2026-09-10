@@ -36,6 +36,32 @@ describe("Agent Lab startup", () => {
       provider: "OpenAI",
       model: "test-model",
       git: null,
+      agent: {
+        instructions: expect.arrayContaining([
+          expect.stringContaining("read-only Workspace Tools"),
+          expect.stringContaining("Approval"),
+        ]),
+        turnInstructions: expect.arrayContaining([
+          expect.stringContaining("filesystem writes"),
+          expect.stringContaining("Proposal Request"),
+          expect.stringContaining("verified application result"),
+        ]),
+        tools: [
+          "listFiles",
+          "readFile",
+          "searchCode",
+          "proposeChangeSet (Proposal Request only)",
+        ],
+        safetyLimits: {
+          maxSteps: 12,
+          maxFileBytes: 262_144,
+          maxSearchMatches: 200,
+          maxChangeOperations: 20,
+          maxChangeSetBytes: 1_048_576,
+          contextWarningCharacters: 100_000,
+        },
+        telemetry: false,
+      },
     });
     expect(body).not.toContain("secret-key");
   });

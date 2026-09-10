@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createAgentSession, MAX_AGENT_STEPS } from "./agent-session.js";
 import { resolveWorkspaceRoot } from "./workspace-root.js";
 import type { ChangeOperation } from "../shared/change-set-contracts.js";
+import { CONTEXT_WARNING_CHARACTERS } from "../shared/agent-policy.js";
 
 const temporaryWorkspaces: string[] = [];
 const usage = {
@@ -248,6 +249,179 @@ afterEach(async () => {
 });
 
 describe("Agent session", () => {
+  it("publishes completed Agent Turn diagnostics with aggregated usage", async () => {
+    const workspace = await workspaceWithSource();
+
+    const { trace } = await runSingleTool(workspace, "readFile", {
+      path: "src/tasks.ts",
+    });
+
+    expect(trace).toContain('"type":"message-metadata"');
+    expect(trace).toContain('"status":"completed"');
+    expect(trace).toContain('"stepCount":2');
+    expect(trace).toContain('"toolCallCount":1');
+    expect(trace).toContain('"inputTokens":10');
+    expect(trace).toContain('"outputTokens":8');
+    expect(trace).toMatch(/"durationMs":\d+/);
+  });
+
+  it.each([
+    { label: "zero", total: 0, expected: '"inputTokens":0' },
+    { label: "unavailable", total: undefined, expected: '"inputTokens":null' },
+  ])("distinguishes $label token usage", async ({ total, expected }) => {
+    const workspace = await workspaceWithSource();
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: simulateReadableStream({
+          chunks: [
+            { type: "text-start" as const, id: "text" },
+            { type: "text-delta" as const, id: "text", delta: "Done." },
+            { type: "text-end" as const, id: "text" },
+            {
+              type: "finish" as const,
+              finishReason: { unified: "stop" as const, raw: undefined },
+              logprobs: undefined,
+              usage: {
+                inputTokens: {
+                  total,
+                  noCache: total,
+                  cacheRead: undefined,
+                  cacheWrite: undefined,
+                },
+                outputTokens: {
+                  total,
+                  text: total,
+                  reasoning: undefined,
+                },
+              },
+            },
+          ],
+        }),
+      }),
+    });
+    const session = await createAgentSession({
+      model,
+      workspace: await resolveWorkspaceRoot(workspace),
+    });
+
+    const trace = JSON.stringify(
+      await collectStream(
+        await session.startTurn([
+          {
+            id: "usage",
+            role: "user",
+            parts: [{ type: "text", text: "Report usage." }],
+          },
+        ]),
+      ),
+    );
+
+    expect(trace).toContain(expected);
+  });
+
+  it("warns on a large context while sending the complete transcript", async () => {
+    const workspace = await workspaceWithSource();
+    const beginning = "BEGINNING-MARKER";
+    const ending = "ENDING-MARKER";
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: simulateReadableStream({
+          chunks: [
+            { type: "text-start" as const, id: "text" },
+            { type: "text-delta" as const, id: "text", delta: "Context received." },
+            { type: "text-end" as const, id: "text" },
+            {
+              type: "finish" as const,
+              finishReason: { unified: "stop" as const, raw: undefined },
+              logprobs: undefined,
+              usage,
+            },
+          ],
+        }),
+      }),
+    });
+    const session = await createAgentSession({
+      model,
+      workspace: await resolveWorkspaceRoot(workspace),
+    });
+    const messages: UIMessage[] = [
+      {
+        id: "beginning",
+        role: "user",
+        parts: [{ type: "text", text: beginning }],
+      },
+      {
+        id: "large",
+        role: "user",
+        parts: [
+          {
+            type: "text",
+            text: `${"x".repeat(CONTEXT_WARNING_CHARACTERS)}${ending}`,
+          },
+        ],
+      },
+    ];
+
+    const trace = JSON.stringify(
+      await collectStream(await session.startTurn(messages)),
+    );
+    const prompt = JSON.stringify(model.doStreamCalls[0]?.prompt);
+
+    expect(trace).toContain('"contextWarning":true');
+    expect(prompt).toContain(beginning);
+    expect(prompt).toContain(ending);
+  });
+
+  it("does not expose model reasoning in the visible Agent Turn", async () => {
+    const workspace = await workspaceWithSource();
+    const model = new MockLanguageModelV4({
+      doStream: async () => ({
+        stream: simulateReadableStream({
+          chunks: [
+            { type: "reasoning-start" as const, id: "reasoning" },
+            {
+              type: "reasoning-delta" as const,
+              id: "reasoning",
+              delta: "private hidden rationale",
+            },
+            { type: "reasoning-end" as const, id: "reasoning" },
+            { type: "text-start" as const, id: "text" },
+            { type: "text-delta" as const, id: "text", delta: "Visible answer." },
+            { type: "text-end" as const, id: "text" },
+            {
+              type: "finish" as const,
+              finishReason: { unified: "stop" as const, raw: undefined },
+              logprobs: undefined,
+              usage,
+            },
+          ],
+        }),
+      }),
+    });
+    const session = await createAgentSession({
+      model,
+      workspace: await resolveWorkspaceRoot(workspace),
+    });
+
+    const trace = JSON.stringify(
+      await collectStream(
+        await session.startTurn([
+          {
+            id: "reasoning-test",
+            role: "user",
+            parts: [{ type: "text", text: "Answer visibly." }],
+          },
+        ]),
+      ),
+    );
+
+    expect(trace).toContain("Visible answer.");
+    expect(trace).not.toContain("private hidden rationale");
+    expect(JSON.stringify(model.doStreamCalls[0]?.prompt)).not.toContain(
+      "chain-of-thought",
+    );
+  });
+
   it.each(["create", "modify", "delete"] as const)(
     "rejects a stale %s assumption without applying an unaffected operation",
     async (kind) => {
