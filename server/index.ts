@@ -12,6 +12,15 @@ const workspace =
   readArgument("workspace") ??
   process.env.AGENT_LAB_WORKSPACE ??
   resolve("examples/task-list");
+const serveClient = process.argv.includes("--serve-client");
+const port = Number(process.env.AGENT_LAB_PORT ?? 8787);
+const browserPort = serveClient ? port : 5173;
+const browserOrigins = process.env.AGENT_LAB_BROWSER_ORIGIN
+  ? [process.env.AGENT_LAB_BROWSER_ORIGIN]
+  : [
+      `http://127.0.0.1:${browserPort}`,
+      `http://localhost:${browserPort}`,
+    ];
 
 try {
   const config = await resolveAgentConfiguration({
@@ -19,8 +28,10 @@ try {
     openAiApiKey: process.env.OPENAI_API_KEY,
     openAiModel: process.env.OPENAI_MODEL,
   });
-  const app = createApp(config);
-  const port = Number(process.env.AGENT_LAB_PORT ?? 8787);
+  const app = createApp(config, {
+    allowedOrigins: browserOrigins,
+    clientRoot: serveClient ? resolve("dist") : undefined,
+  });
 
   serve({
     fetch: app.fetch,

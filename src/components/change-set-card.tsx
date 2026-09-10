@@ -83,7 +83,11 @@ export function ChangeSetCard({
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2">
               <p className="font-medium">Change Set</p>
-              <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground">
+              <span
+                className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-wide text-muted-foreground"
+                role="status"
+                aria-live="polite"
+              >
                 {visibleState}
               </span>
             </div>

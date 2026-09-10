@@ -42,7 +42,7 @@ export function App() {
         <section className="w-full max-w-lg rounded-3xl border border-danger/30 bg-surface p-8 shadow-xl shadow-black/5">
           <AlertCircle className="mb-5 size-8 text-danger" />
           <h1 className="text-xl font-semibold">Agent Lab could not start</h1>
-          <p className="mt-2 text-sm leading-6 text-muted">{error}</p>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">{error}</p>
         </section>
       </main>
     );
@@ -50,7 +50,10 @@ export function App() {
 
   if (!config) {
     return (
-      <main className="grid min-h-screen place-items-center text-sm text-muted">
+      <main
+        className="grid min-h-screen place-items-center text-sm text-muted-foreground"
+        role="status"
+      >
         Loading Agent Lab…
       </main>
     );
@@ -62,8 +65,8 @@ export function App() {
         <section className="w-full max-w-xl rounded-3xl border border-danger/30 bg-surface p-8 shadow-xl shadow-black/5">
           <AlertCircle className="mb-5 size-8 text-danger" />
           <h1 className="text-xl font-semibold">Workspace unavailable</h1>
-          <p className="mt-2 text-sm leading-6 text-muted">{config.error}</p>
-          <p className="mt-5 text-sm leading-6 text-muted">
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">{config.error}</p>
+          <p className="mt-5 text-sm leading-6 text-muted-foreground">
             Restart with{" "}
             <code className="break-all rounded bg-subtle px-1.5 py-0.5">
               pnpm dev -- --workspace /path/to/repository
@@ -75,8 +78,8 @@ export function App() {
   }
 
   return (
-    <main className="min-h-screen p-4 sm:p-8">
-      <section className="mx-auto flex min-h-[calc(100vh-2rem)] max-w-5xl flex-col overflow-hidden rounded-[2rem] border border-border bg-surface shadow-2xl shadow-black/5 sm:min-h-[calc(100vh-4rem)]">
+    <main className="min-h-dvh p-2 sm:p-8">
+      <section className="mx-auto flex min-h-[calc(100dvh-1rem)] max-w-5xl flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl shadow-black/5 sm:min-h-[calc(100dvh-4rem)] sm:rounded-[2rem]">
         <header className="flex flex-wrap items-center justify-between gap-4 border-b border-border px-5 py-4 sm:px-8">
           <div className="flex min-w-0 items-center gap-3">
             <span className="grid size-10 shrink-0 place-items-center rounded-2xl bg-foreground text-background">
@@ -84,12 +87,12 @@ export function App() {
             </span>
             <div className="min-w-0">
               <h1 className="font-semibold tracking-tight">Agent Lab</h1>
-              <p className="truncate text-xs text-muted">
+              <p className="truncate text-xs text-muted-foreground">
                 See how a Coding Agent works
               </p>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex max-w-full flex-wrap items-center gap-2">
             <AgentConfigurationSheet config={config} />
             <Badge>
               {config.provider} · {config.model}
@@ -107,14 +110,16 @@ export function App() {
           <div className="border-b border-border bg-subtle px-5 py-3 sm:px-8">
             <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
               <div className="flex min-w-0 items-center gap-2">
-                <FolderGit2 className="size-4 shrink-0 text-muted" />
-                <span className="font-medium">{basename(config.workspace)}</span>
-                <span className="min-w-0 truncate text-muted">
+                <FolderGit2 className="size-4 shrink-0 text-muted-foreground" />
+                <span className="shrink-0 whitespace-nowrap font-medium">
+                  {basename(config.workspace)}
+                </span>
+                <span className="min-w-0 truncate text-muted-foreground">
                   {config.workspace}
                 </span>
               </div>
               <details className="group/privacy relative">
-                <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs text-muted hover:text-foreground [&::-webkit-details-marker]:hidden">
+                <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
                   <ShieldCheck className="size-3.5" /> Data boundary
                 </summary>
                 <div className="absolute right-0 top-7 z-20 w-72 rounded-xl border border-border bg-popover p-4 text-xs leading-5 text-popover-foreground shadow-xl">
@@ -129,11 +134,11 @@ export function App() {
           {config.status === "needs-api-key" ? (
             <div className="grid flex-1 place-items-center px-6 py-16 text-center">
               <div className="max-w-md">
-                <KeyRound className="mx-auto size-8 text-muted" />
+                <KeyRound className="mx-auto size-8 text-muted-foreground" />
                 <h2 className="mt-5 text-lg font-semibold">
                   Add your OpenAI API key
                 </h2>
-                <p className="mt-2 text-sm leading-6 text-muted">
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
                   Set{" "}
                   <code className="rounded bg-subtle px-1.5 py-0.5">
                     OPENAI_API_KEY

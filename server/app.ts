@@ -1,4 +1,5 @@
-import { Hono } from "hono";
+import { Hono, type MiddlewareHandler } from "hono";
+import { serveStatic } from "@hono/node-server/serve-static";
 import {
   createUIMessageStreamResponse,
   type LanguageModel,
@@ -13,7 +14,20 @@ import { ActiveAgentTurnError, createAgentSession } from "./agent-session.js";
 
 type AppDependencies = {
   model?: LanguageModel;
+  allowedOrigins?: readonly string[];
+  clientRoot?: string;
 };
+
+function requireBrowserOrigin(
+  allowedOrigins: readonly string[],
+): MiddlewareHandler {
+  return async (context, next) => {
+    if (!allowedOrigins.includes(context.req.header("origin") ?? "")) {
+      return context.json({ error: "Browser origin is not allowed." }, 403);
+    }
+    await next();
+  };
+}
 
 export function createApp(
   config: AgentConfiguration,
@@ -29,6 +43,12 @@ export function createApp(
           workspace: config.workspace,
         })
       : null;
+
+  if (dependencies.allowedOrigins?.length) {
+    const browserOriginGuard = requireBrowserOrigin(dependencies.allowedOrigins);
+    app.use("/api/chat", browserOriginGuard);
+    app.use("/api/change-sets/*", browserOriginGuard);
+  }
 
   app.get("/api/config", (context) =>
     context.json(publicAgentConfiguration(config)),
@@ -123,6 +143,16 @@ export function createApp(
       throw error;
     }
   });
+
+  app.all("/api/*", (context) => context.json({ error: "Not found." }, 404));
+
+  if (dependencies.clientRoot) {
+    app.use("*", serveStatic({ root: dependencies.clientRoot }));
+    app.get(
+      "*",
+      serveStatic({ root: dependencies.clientRoot, path: "index.html" }),
+    );
+  }
 
   return app;
 }

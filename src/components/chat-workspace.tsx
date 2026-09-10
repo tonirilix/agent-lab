@@ -149,7 +149,7 @@ export function ChatWorkspace({
   }
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-h-0 flex-1 flex-col" aria-busy={active}>
       <MessageScrollerProvider autoScroll defaultScrollPosition="end">
         <MessageScroller className="flex-1">
           <MessageScrollerViewport>
