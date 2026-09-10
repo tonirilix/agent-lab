@@ -78,8 +78,8 @@ export function App() {
   }
 
   return (
-    <main className="min-h-dvh p-2 sm:p-8">
-      <section className="mx-auto flex min-h-[calc(100dvh-1rem)] max-w-5xl flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl shadow-black/5 sm:min-h-[calc(100dvh-4rem)] sm:rounded-[2rem]">
+    <main className="h-dvh overflow-hidden p-2 sm:p-8">
+      <section className="mx-auto flex h-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl shadow-black/5 sm:rounded-[2rem]">
         <header className="flex flex-wrap items-center justify-between gap-4 border-b border-border px-5 py-4 sm:px-8">
           <div className="flex min-w-0 items-center gap-3">
             <span className="grid size-10 shrink-0 place-items-center rounded-2xl bg-foreground text-background">
@@ -106,8 +106,8 @@ export function App() {
           </div>
         </header>
 
-        <div className="flex flex-1 flex-col">
-          <div className="border-b border-border bg-subtle px-5 py-3 sm:px-8">
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="shrink-0 border-b border-border bg-subtle px-5 py-3 sm:px-8">
             <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
               <div className="flex min-w-0 items-center gap-2">
                 <FolderGit2 className="size-4 shrink-0 text-muted-foreground" />
