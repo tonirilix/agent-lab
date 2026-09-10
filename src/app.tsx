@@ -1,0 +1,163 @@
+import {
+  AlertCircle,
+  Bot,
+  FolderGit2,
+  KeyRound,
+  ShieldCheck,
+} from "lucide-react";
+import { useEffect, useState } from "react";
+import {
+  publicAgentConfigurationSchema,
+  type PublicAgentConfiguration,
+} from "../shared/contracts";
+import { Badge } from "./components/ui/badge";
+import { ChatWorkspace } from "./components/chat-workspace";
+import { AgentConfigurationSheet } from "./components/agent-configuration-sheet";
+
+function basename(path: string) {
+  return path.split("/").filter(Boolean).at(-1) ?? path;
+}
+
+export function App() {
+  const [config, setConfig] = useState<PublicAgentConfiguration | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch("/api/config")
+      .then(async (response) => {
+        if (!response.ok) {
+          throw new Error("Agent Lab could not load its configuration.");
+        }
+        return publicAgentConfigurationSchema.parse(await response.json());
+      })
+      .then(setConfig)
+      .catch((reason: unknown) =>
+        setError(reason instanceof Error ? reason.message : String(reason)),
+      );
+  }, []);
+
+  if (error) {
+    return (
+      <main className="grid min-h-screen place-items-center p-6">
+        <section className="w-full max-w-lg rounded-3xl border border-danger/30 bg-surface p-8 shadow-xl shadow-black/5">
+          <AlertCircle className="mb-5 size-8 text-danger" />
+          <h1 className="text-xl font-semibold">Agent Lab could not start</h1>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">{error}</p>
+        </section>
+      </main>
+    );
+  }
+
+  if (!config) {
+    return (
+      <main
+        className="grid min-h-screen place-items-center text-sm text-muted-foreground"
+        role="status"
+      >
+        Loading Agent Lab…
+      </main>
+    );
+  }
+
+  if (config.status === "invalid-workspace") {
+    return (
+      <main className="grid min-h-screen place-items-center p-6">
+        <section className="w-full max-w-xl rounded-3xl border border-danger/30 bg-surface p-8 shadow-xl shadow-black/5">
+          <AlertCircle className="mb-5 size-8 text-danger" />
+          <h1 className="text-xl font-semibold">Workspace unavailable</h1>
+          <p className="mt-2 text-sm leading-6 text-muted-foreground">{config.error}</p>
+          <p className="mt-5 text-sm leading-6 text-muted-foreground">
+            Restart with{" "}
+            <code className="break-all rounded bg-subtle px-1.5 py-0.5">
+              pnpm dev -- --workspace /path/to/repository
+            </code>
+          </p>
+        </section>
+      </main>
+    );
+  }
+
+  return (
+    <main className="h-dvh overflow-hidden p-2 sm:p-8">
+      <section className="mx-auto flex h-full max-w-5xl flex-col overflow-hidden rounded-2xl border border-border bg-surface shadow-2xl shadow-black/5 sm:rounded-[2rem]">
+        <header className="flex flex-wrap items-center justify-between gap-4 border-b border-border px-5 py-4 sm:px-8">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="grid size-10 shrink-0 place-items-center rounded-2xl bg-foreground text-background">
+              <Bot className="size-5" />
+            </span>
+            <div className="min-w-0">
+              <h1 className="font-semibold tracking-tight">Agent Lab</h1>
+              <p className="truncate text-xs text-muted-foreground">
+                See how a Coding Agent works
+              </p>
+            </div>
+          </div>
+          <div className="flex max-w-full flex-wrap items-center gap-2">
+            <AgentConfigurationSheet config={config} />
+            <Badge>
+              {config.provider} · {config.model}
+            </Badge>
+            {config.git ? (
+              <Badge>
+                {config.git.branch}
+                {config.git.dirty ? " · modified" : " · clean"}
+              </Badge>
+            ) : null}
+          </div>
+        </header>
+
+        <div className="flex min-h-0 flex-1 flex-col">
+          <div className="shrink-0 border-b border-border bg-subtle px-5 py-3 sm:px-8">
+            <div className="flex flex-wrap items-center justify-between gap-3 text-sm">
+              <div className="flex min-w-0 items-center gap-2">
+                <FolderGit2 className="size-4 shrink-0 text-muted-foreground" />
+                <span className="shrink-0 whitespace-nowrap font-medium">
+                  {basename(config.workspace)}
+                </span>
+                <span className="min-w-0 truncate text-muted-foreground">
+                  {config.workspace}
+                </span>
+              </div>
+              <details className="group/privacy relative">
+                <summary className="flex cursor-pointer list-none items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground [&::-webkit-details-marker]:hidden">
+                  <ShieldCheck className="size-3.5" /> Data boundary
+                </summary>
+                <div className="absolute right-0 top-7 z-20 w-72 rounded-xl border border-border bg-popover p-4 text-xs leading-5 text-popover-foreground shadow-xl">
+                  Workspace files stay local until a Tool Call reads them. The
+                  bounded Tool result is then sent to the configured OpenAI
+                  model as conversation context.
+                </div>
+              </details>
+            </div>
+          </div>
+
+          {config.status === "needs-api-key" ? (
+            <div className="grid flex-1 place-items-center px-6 py-16 text-center">
+              <div className="max-w-md">
+                <KeyRound className="mx-auto size-8 text-muted-foreground" />
+                <h2 className="mt-5 text-lg font-semibold">
+                  Add your OpenAI API key
+                </h2>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  Set{" "}
+                  <code className="rounded bg-subtle px-1.5 py-0.5">
+                    OPENAI_API_KEY
+                  </code>{" "}
+                  in the server environment, then restart Agent Lab. The key is
+                  never sent to this browser.
+                </p>
+              </div>
+            </div>
+          ) : (
+            <ChatWorkspace
+              model={config.model}
+              contextWarningCharacters={
+                config.agent.safetyLimits.contextWarningCharacters
+              }
+            />
+          )}
+        </div>
+      </section>
+    </main>
+  );
+}

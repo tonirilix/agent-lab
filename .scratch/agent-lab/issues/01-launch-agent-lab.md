@@ -4,16 +4,15 @@
 
 **Blocked by:** None (can start immediately).
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] One pnpm command starts the Vite client and local Hono server for development.
-- [ ] Startup accepts a Workspace path and resolves it to an accessible canonical directory.
-- [ ] The server binds to loopback rather than exposing itself to the local network.
-- [ ] The browser shows the Workspace path, configured OpenAI provider, and configured model.
-- [ ] When the Workspace is a Git repository, the browser shows its branch and dirty state without mutating Git.
-- [ ] A missing or invalid Workspace produces a focused setup error with a corrective action.
-- [ ] A missing OpenAI API key produces a focused setup state without exposing credentials to browser code.
-- [ ] A small disposable TypeScript task-list Example Workspace is available for demonstrations.
-- [ ] The initial shell uses shadcn components and follows the system light or dark theme.
-- [ ] Automated checks cover valid and invalid startup configuration through an externally visible server boundary.
-
+- [x] One pnpm command starts the Vite client and local Hono server for development.
+- [x] Startup accepts a Workspace path and resolves it to an accessible canonical directory.
+- [x] The server binds to loopback rather than exposing itself to the local network.
+- [x] The browser shows the Workspace path, configured OpenAI provider, and configured model.
+- [x] When the Workspace is a Git repository, the browser shows its branch and dirty state without mutating Git.
+- [x] A missing or invalid Workspace produces a focused setup error with a corrective action.
+- [x] A missing OpenAI API key produces a focused setup state without exposing credentials to browser code.
+- [x] A small disposable TypeScript task-list Example Workspace is available for demonstrations.
+- [x] The initial shell uses shadcn components and follows the system light or dark theme.
+- [x] Automated checks cover valid and invalid startup configuration through an externally visible server boundary.

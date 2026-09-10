@@ -4,19 +4,18 @@
 
 **Blocked by:** 03: Inspect the Workspace through visible Tool Calls.
 
-**Status:** ready-for-agent
+**Status:** resolved
 
-- [ ] Ordinary messages and conversational agreement cannot make proposal or write Tools available.
-- [ ] A visible Propose changes action creates a Proposal Request from the existing conversation.
-- [ ] A Proposal Request permits preparation of one Change Set but grants no filesystem-write permission.
-- [ ] Structured operations support creating, modifying, and deleting eligible UTF-8 text files.
-- [ ] Existing-file operations carry the fingerprint of the content on which the proposal is based.
-- [ ] The server validates operation shape, paths, fingerprints, content type, and configured bounds before accepting a pending Change Set.
-- [ ] The server derives the review diff rather than trusting model-authored diff text.
-- [ ] The transcript shows a compact Change Set card with summary and affected-file information.
-- [ ] A shadcn Sheet shows the summary, warnings, affected files, per-file diffs, and Approval and rejection controls.
-- [ ] An advanced disclosure shows the validated structured operations used to create the diff.
-- [ ] Only one Change Set may be pending at a time.
-- [ ] Rejection leaves the Workspace unchanged and accepts optional feedback for a later revision turn.
-- [ ] Tests demonstrate that discussion, Proposal Request, review, and rejection leave every Workspace file unchanged.
-
+- [x] Ordinary messages and conversational agreement cannot make proposal or write Tools available.
+- [x] A visible Propose changes action creates a Proposal Request from the existing conversation.
+- [x] A Proposal Request permits preparation of one Change Set but grants no filesystem-write permission.
+- [x] Structured operations support creating, modifying, and deleting eligible UTF-8 text files.
+- [x] Existing-file operations carry the fingerprint of the content on which the proposal is based.
+- [x] The server validates operation shape, paths, fingerprints, content type, and configured bounds before accepting a pending Change Set.
+- [x] The server derives the review diff rather than trusting model-authored diff text.
+- [x] The transcript shows a compact Change Set card with summary and affected-file information.
+- [x] A shadcn Sheet shows the summary, warnings, affected files, per-file diffs, and Approval and rejection controls.
+- [x] An advanced disclosure shows the validated structured operations used to create the diff.
+- [x] Only one Change Set may be pending at a time.
+- [x] Rejection leaves the Workspace unchanged and accepts optional feedback for a later revision turn.
+- [x] Tests demonstrate that discussion, Proposal Request, review, and rejection leave every Workspace file unchanged.
