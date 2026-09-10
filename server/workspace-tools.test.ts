@@ -68,6 +68,26 @@ describe("Workspace inspection Tools", () => {
     expect(template.content).toBe("OPENAI_API_KEY=\n");
   });
 
+  it("accepts harmless path spellings but still requires normalized paths", async () => {
+    const workspace = await createWorkspace();
+    await writeFile(join(workspace, "src", "tasks.ts"), "export const tasks = [];\n");
+    const tools = await createWorkspaceTools(await resolveWorkspaceRoot(workspace));
+
+    for (const path of [".", "./", "src", "src/", "./src", "./src/"]) {
+      const listing = await tools.listFiles({ path });
+      expect(listing.files, path).toContain("src/tasks.ts");
+    }
+    expect((await tools.readFile({ path: "./src/tasks.ts" })).content).toContain(
+      "tasks",
+    );
+
+    for (const path of ["src/..", "src/../src", "../", "src//tasks.ts"]) {
+      await expect(tools.listFiles({ path }), path).rejects.toThrow(
+        /normalized|escapes/,
+      );
+    }
+  });
+
   it("rejects traversal, symlink escape, secrets, invalid text, and oversized files", async () => {
     const workspace = await createWorkspace();
     const outside = await mkdtemp(join(tmpdir(), "agent-lab-outside-"));

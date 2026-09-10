@@ -53,6 +53,22 @@ function portablePath(path: string) {
   return path.split(sep).join("/");
 }
 
+/**
+ * Accepts harmless spellings of the same relative path that models commonly
+ * produce: a leading "./" and a trailing "/". Everything else, including any
+ * ".." segment, must already be in normalized form and is checked strictly.
+ */
+function normalizeToolPath(path: string) {
+  let normalized = path.trim();
+  while (normalized.startsWith("./")) {
+    normalized = normalized.slice(2);
+  }
+  while (normalized.length > 1 && normalized.endsWith("/")) {
+    normalized = normalized.slice(0, -1);
+  }
+  return normalized === "" ? "." : normalized;
+}
+
 function isInside(root: string, target: string) {
   const fromRoot = relative(root, target);
   return (
@@ -154,13 +170,16 @@ export async function createWorkspaceTools(workspace: WorkspaceRoot) {
     gitAvailable = false;
   }
 
-  function assertEligiblePath(path: string) {
-    if (!path || isAbsolute(path)) {
-      throw new WorkspaceAccessError(`Path must be relative to the Workspace: ${path}`);
+  function assertEligiblePath(requestedPath: string) {
+    const path = normalizeToolPath(requestedPath);
+    if (!requestedPath.trim() || isAbsolute(path)) {
+      throw new WorkspaceAccessError(
+        `Path must be relative to the Workspace: ${requestedPath}`,
+      );
     }
     const target = resolve(root, path);
     if (!isInside(root, target)) {
-      throw new WorkspaceAccessError(`Path escapes the Workspace: ${path}`);
+      throw new WorkspaceAccessError(`Path escapes the Workspace: ${requestedPath}`);
     }
     const relativePath = portablePath(relative(root, target));
     if (portablePath(path) !== relativePath) {
@@ -268,9 +287,10 @@ export async function createWorkspaceTools(workspace: WorkspaceRoot) {
   }
 
   async function eligibleFiles(
-    startPath = ".",
+    requestedStartPath = ".",
     options: InspectionOptions = {},
   ) {
+    const startPath = normalizeToolPath(requestedStartPath);
     const start =
       startPath === "."
         ? { target: root, canonical: root, relativePath: "" }
