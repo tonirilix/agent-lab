@@ -74,6 +74,8 @@ export function createDiagnosticUIStream<TOOLS extends ToolSet>({
   const uiStream = toUIMessageStream<TOOLS, AgentUIMessage>({
     stream: observed,
     sendReasoning: false,
+    onError: () =>
+      "The model stream stopped before the Coding Agent could finish. Retry the Agent Turn; completed Tool Calls are preserved above.",
   });
 
   return uiStream.pipeThrough(

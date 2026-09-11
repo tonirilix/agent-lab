@@ -1,3 +1,4 @@
+import { memo, useState } from "react";
 import { CheckCircle2, ChevronRight, CircleEllipsis, XCircle } from "lucide-react";
 import { getToolName } from "ai";
 
@@ -16,7 +17,12 @@ function isStructuredToolError(value: unknown) {
   );
 }
 
-export function ToolTraceEntry({ part }: { part: VisibleToolPart }) {
+export const ToolTraceEntry = memo(function ToolTraceEntry({
+  part,
+}: {
+  part: VisibleToolPart;
+}) {
+  const [open, setOpen] = useState(false);
   const toolName = getToolName(part);
   const finished = part.state === "output-available";
   const failed =
@@ -25,7 +31,10 @@ export function ToolTraceEntry({ part }: { part: VisibleToolPart }) {
     (part.state === "output-available" && isStructuredToolError(part.output));
 
   return (
-    <details className="group/tool my-2 overflow-hidden rounded-xl border border-border bg-muted/40 text-sm">
+    <details
+      className="group/tool my-2 overflow-hidden rounded-xl border border-border bg-muted/40 text-sm"
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
       <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 font-medium [&::-webkit-details-marker]:hidden">
         <ChevronRight className="size-4 shrink-0 transition-transform group-open/tool:rotate-90" />
         {failed ? (
@@ -40,7 +49,7 @@ export function ToolTraceEntry({ part }: { part: VisibleToolPart }) {
           {failed ? "failed" : finished ? "complete" : "running"}
         </span>
       </summary>
-      <div className="space-y-3 border-t border-border px-3 py-3">
+      {open ? <div className="space-y-3 border-t border-border px-3 py-3">
         <div>
           <p className="mb-1 text-xs font-medium text-muted-foreground">
             Arguments sent by the model
@@ -64,7 +73,7 @@ export function ToolTraceEntry({ part }: { part: VisibleToolPart }) {
             {part.errorText}
           </div>
         ) : null}
-      </div>
+      </div> : null}
     </details>
   );
-}
+});
