@@ -236,6 +236,7 @@ export async function createAgentSession({
             isStepCount(MAX_AGENT_STEPS),
             () => proposalCreatedThisTurn,
           ],
+          streamRetries: 1,
           abortSignal,
         });
 
