@@ -299,6 +299,22 @@ export function ChatWorkspace({
             aria-label="Message Agent Lab"
             className="max-h-40 min-h-11 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
           />
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="shrink-0"
+            onClick={requestProposal}
+            disabled={active || hasPendingChangeSet || messages.length === 0}
+            aria-label={
+              hasPendingChangeSet ? "Change Set pending" : "Propose changes"
+            }
+          >
+            <GitPullRequestArrow />
+            <span className="hidden sm:inline">
+              {hasPendingChangeSet ? "Change Set pending" : "Propose changes"}
+            </span>
+          </Button>
           {active ? (
             <Button
               type="button"
@@ -327,18 +343,6 @@ export function ChatWorkspace({
         <p className="mx-auto mt-2 max-w-3xl text-center text-[11px] text-muted-foreground">
           Enter to send · Shift+Enter for a new line
         </p>
-        <div className="mx-auto mt-3 flex max-w-3xl justify-center">
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={requestProposal}
-            disabled={active || hasPendingChangeSet || messages.length === 0}
-          >
-            <GitPullRequestArrow />
-            {hasPendingChangeSet ? "Change Set pending" : "Propose changes"}
-          </Button>
-        </div>
         <p className="sr-only" aria-live="polite" aria-atomic="true">
           {status === "submitted"
             ? "Message sent. Waiting for OpenAI."
