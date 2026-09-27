@@ -20,6 +20,7 @@ import {
 } from "./change-set.js";
 import { createWorkspaceTools } from "./workspace-tools.js";
 import { createReadOnlyAgentTools } from "./read-only-agent-tools.js";
+import type { ToolTrace } from "./tool-trace.js";
 import type { AgentLifecycle } from "./agent-lifecycle.js";
 import type { WorkspaceRoot } from "./workspace-root.js";
 import {
@@ -191,14 +192,14 @@ export async function createAgentSession({
       objective: string;
       plan: string;
       findings: string[];
-    }): Promise<PendingChangeSet> {
+    }, trace?: ToolTrace): Promise<PendingChangeSet> {
       if (activeTurn) throw new ActiveAgentTurnError();
       activeTurn = true;
       let prepared: PendingChangeSet | undefined;
       let validationError: string | undefined;
       const observedFingerprints = new Map<string, string>();
       try {
-        await generateText({
+        const result = await generateText({
           model,
           instructions: [
             "You are the implementation worker in Agent Lab.",
@@ -206,6 +207,7 @@ export async function createAgentSession({
             "Do not calculate or copy originalFingerprint values; the server binds proposals to the file versions returned by readFile.",
             "The Change Set should satisfy the objective and include appropriate tests.",
             "You cannot write files. proposeChangeSet only prepares a reviewable proposal; the user must approve it separately.",
+            "After inspecting the required files, call proposeChangeSet before ending the run. A written implementation plan is not a proposal.",
           ].join(" "),
           prompt: [
             `Objective: ${input.objective}`,
@@ -262,6 +264,8 @@ export async function createAgentSession({
             }),
           },
           stopWhen: [isStepCount(MAX_AGENT_STEPS), () => !!prepared],
+          onToolExecutionStart: trace?.onStart,
+          onToolExecutionEnd: trace?.onEnd,
           maxOutputTokens: 8_000,
           abortSignal: AbortSignal.timeout(180_000),
         });
@@ -269,7 +273,7 @@ export async function createAgentSession({
           throw new ChangeSetValidationError(
             validationError
               ? `Implementation worker did not prepare a valid Change Set: ${validationError}`
-              : "Implementation worker did not prepare a Change Set.",
+              : `Implementation worker did not prepare a Change Set: model stopped after ${result.steps.length} steps without calling proposeChangeSet (finish reason: ${result.finishReason}).`,
           );
         }
         return prepared;

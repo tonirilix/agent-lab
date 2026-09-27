@@ -71,7 +71,7 @@ export function createReadOnlyAgentTools(
     }),
     searchCode: tool({
       description:
-        "Search eligible Workspace files for plain text and return bounded line matches.",
+        "Search eligible Workspace files for plain text and return bounded line matches. The optional path may be a file or directory.",
       inputSchema: z.object({
         query: z
           .string()
@@ -82,7 +82,7 @@ export function createReadOnlyAgentTools(
           .string()
           .max(MAX_TOOL_PATH_LENGTH)
           .optional()
-          .describe("Optional relative directory"),
+          .describe("Optional relative file or directory"),
         caseSensitive: z.boolean().optional(),
       }),
       execute: (input, { abortSignal }) => {

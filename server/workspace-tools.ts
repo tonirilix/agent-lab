@@ -426,7 +426,16 @@ export async function createWorkspaceTools(workspace: WorkspaceRoot) {
       if (!input.query) {
         throw new WorkspaceAccessError("Search query must not be empty.");
       }
-      const listing = await eligibleFiles(input.path ?? ".", options);
+      const scopedPath = normalizeToolPath(input.path ?? ".");
+      const selected = scopedPath === "."
+        ? null
+        : await resolveCanonicalPath(scopedPath);
+      const selectedFile = selected && (await lstat(selected.target)).isFile()
+        ? await inspectTextFile(selected.relativePath, options)
+        : null;
+      const listing = selectedFile
+        ? { files: [selectedFile.path], truncated: false }
+        : await eligibleFiles(input.path ?? ".", options);
       const matches: Array<{
         path: string;
         line: number;

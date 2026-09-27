@@ -10,6 +10,7 @@ import type { WorkspaceRoot } from "./workspace-root.js";
 import { createWorkspaceTools } from "./workspace-tools.js";
 import { createReadOnlyAgentTools } from "./read-only-agent-tools.js";
 import { verifyWorkflowChangeSet } from "./workflow-verification.js";
+import { createToolTrace, type ToolTrace } from "./tool-trace.js";
 import {
   AgentLifecycleBusyError,
   type AgentLifecycle,
@@ -31,7 +32,7 @@ const BRIEFS = [
 export type InvestigationWorkerRunner = (
   worker: Pick<InvestigationWorker, "id" | "title" | "brief">,
   objective: string,
-  onToolUse: (name: string) => void,
+  trace: ToolTrace,
 ) => Promise<string>;
 
 export type InvestigationStages = {
@@ -41,7 +42,7 @@ export type InvestigationStages = {
     objective: string;
     plan: string;
     findings: string[];
-  }) => Promise<PendingChangeSet>;
+  }, trace: ToolTrace) => Promise<PendingChangeSet>;
   verify?: (changeSet: PendingChangeSet) => Promise<string>;
   review: (input: {
     objective: string;
@@ -49,7 +50,7 @@ export type InvestigationStages = {
     findings: string[];
     changeSet: PendingChangeSet;
     verification: string;
-  }) => Promise<string>;
+  }, trace: ToolTrace) => Promise<string>;
 };
 
 export class ActiveInvestigationError extends Error {
@@ -71,9 +72,9 @@ export function createModelInvestigationWorker(
   workspace: WorkspaceRoot,
 ): InvestigationWorkerRunner {
   let workspaceTools: ReturnType<typeof createWorkspaceTools> | undefined;
-  return async (worker, objective, onToolUse) => {
+  return async (worker, objective, trace) => {
     workspaceTools ??= createWorkspaceTools(workspace);
-    const tools = createReadOnlyAgentTools(await workspaceTools, onToolUse);
+    const tools = createReadOnlyAgentTools(await workspaceTools);
     const result = await generateText({
       model,
       instructions: [
@@ -85,6 +86,8 @@ export function createModelInvestigationWorker(
       ].join(" "),
       prompt: `User objective: ${objective}`,
       tools,
+      onToolExecutionStart: trace.onStart,
+      onToolExecutionEnd: trace.onEnd,
       stopWhen: isStepCount(6),
       maxOutputTokens: 1_000,
       abortSignal: AbortSignal.timeout(90_000),
@@ -131,7 +134,7 @@ export function createModelInvestigationStages(
     },
     implement,
     verify: (changeSet) => verifyWorkflowChangeSet(workspace, changeSet),
-    async review({ objective, plan, findings, changeSet, verification }) {
+    async review({ objective, plan, findings, changeSet, verification }, trace) {
       workspaceTools ??= createWorkspaceTools(workspace);
       const proposedDiff = changeSet.files
         .map((file) => `${file.path}\n${file.diff}`)
@@ -159,6 +162,8 @@ export function createModelInvestigationStages(
           `Proposed diff:\n${proposedDiff}`,
         ].join("\n\n"),
         tools: createReadOnlyAgentTools(await workspaceTools),
+        onToolExecutionStart: trace.onStart,
+        onToolExecutionEnd: trace.onEnd,
         stopWhen: isStepCount(6),
         maxOutputTokens: 1_200,
         abortSignal: AbortSignal.timeout(90_000),
@@ -216,12 +221,14 @@ export function createInvestigationService(
       await Promise.all(run.workers.filter((worker) => worker.status !== "completed").map(async (worker) => {
         worker.status = "running";
         worker.error = undefined;
-        worker.toolsUsed = [];
+        worker.toolTrace = [];
         worker.startedAt = new Date().toISOString();
         try {
-          worker.report = await runWorker(worker, run.objective, (name) => {
-            worker.toolsUsed.push(name);
-          });
+          worker.report = await runWorker(
+            worker,
+            run.objective,
+            createToolTrace(worker.toolTrace),
+          );
           worker.status = "completed";
         } catch (error) {
           worker.error = error instanceof Error ? error.message : String(error);
@@ -250,11 +257,12 @@ export function createInvestigationService(
       const plan = coordinator.report;
       if (plan === undefined) throw new Error("Coordinator finished without a plan.");
       await executeStage(implementer, async () => {
+        implementer.toolTrace = [];
         run.changeSet = await stages.implement({
           objective: run.objective,
           plan,
           findings,
-        });
+        }, createToolTrace(implementer.toolTrace));
         lifecycle?.registerWorkflowChangeSet(run.changeSet.id, (decision) => {
           run.status = decision === "approved" ? "completed" : "rejected";
           run.finishedAt = new Date().toISOString();
@@ -272,13 +280,16 @@ export function createInvestigationService(
       if (verificationReport === undefined) {
         throw new Error("Verification finished without a report.");
       }
-      await executeStage(reviewer, () => stages.review({
-        objective: run.objective,
-        plan,
-        findings,
-        changeSet,
-        verification: verificationReport,
-      }));
+      await executeStage(reviewer, () => {
+        reviewer.toolTrace = [];
+        return stages.review({
+          objective: run.objective,
+          plan,
+          findings,
+          changeSet,
+          verification: verificationReport,
+        }, createToolTrace(reviewer.toolTrace));
+      });
       run.status = "awaiting_approval";
       lifecycle?.markWorkflowReady(changeSet.id);
     } catch {
@@ -334,7 +345,7 @@ export function createInvestigationService(
         workers: BRIEFS.map((brief) => ({
           ...brief,
           status: "queued",
-          toolsUsed: [],
+          toolTrace: [],
         })),
         ...(stages
           ? {

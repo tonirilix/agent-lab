@@ -11,6 +11,10 @@ const projectRoot = fileURLToPath(new URL("../", import.meta.url));
 const exampleWorkspace = resolve(projectRoot, "examples/task-list");
 const vitestCli = resolve(projectRoot, "node_modules/vitest/vitest.mjs");
 
+function plainOutput(output: string) {
+  return output.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+}
+
 function inside(root: string, path: string) {
   const displacement = relative(root, path);
   return displacement !== "" && displacement !== ".." &&
@@ -78,11 +82,11 @@ export async function verifyWorkflowChangeSet(
         env: { PATH: process.env.PATH, CI: "true" },
       }, (error, stdout, stderr) => {
         if (error) {
-          reject(new Error(`Proposed Change Set failed the example test suite.\n${(stdout + stderr).slice(-8_000) || error.message}`));
+          reject(new Error(`Proposed Change Set failed the example test suite.\n${plainOutput(stdout + stderr).slice(-8_000) || error.message}`));
         } else resolveOutput({ stdout, stderr });
       });
     });
-    return `Passed the example test suite in a disposable copy.\n${(output.stdout + output.stderr).slice(-8_000)}`;
+    return `Passed the example test suite in a disposable copy.\n${plainOutput(output.stdout + output.stderr).slice(-8_000)}`;
   } finally {
     await rm(disposable, { recursive: true, force: true });
   }

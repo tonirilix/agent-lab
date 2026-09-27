@@ -112,6 +112,8 @@ describe("Workspace inspection Tools", () => {
         WorkspaceAccessError,
       );
     }
+    await expect(tools.searchCode({ query: "TOKEN", path: ".env.local" }))
+      .rejects.toBeInstanceOf(WorkspaceAccessError);
   });
 
   it("bounds search results and reports truncation explicitly", async () => {
@@ -130,6 +132,16 @@ describe("Workspace inspection Tools", () => {
     expect(result.matches).toHaveLength(MAX_SEARCH_MATCHES);
     expect(result.truncated).toBe(true);
     expect(result.totalMatches).toBeGreaterThan(MAX_SEARCH_MATCHES);
+  });
+
+  it("searches a single eligible file when given a file path", async () => {
+    const workspace = await createWorkspace();
+    await writeFile(join(workspace, "src", "tasks.ts"), "export const priority = true;\n");
+    const tools = await createWorkspaceTools(await resolveWorkspaceRoot(workspace));
+
+    const result = await tools.searchCode({ query: "priority", path: "src/tasks.ts" });
+    expect(result.matches).toMatchObject([{ path: "src/tasks.ts", line: 1 }]);
+    expect((await tools.searchCode({ query: "priority", path: "." })).matches).toHaveLength(1);
   });
 
   it("honors nested and effective Git ignore rules", async () => {

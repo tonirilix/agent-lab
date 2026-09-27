@@ -64,8 +64,8 @@ function createAgentRuntime(
     dependencies.investigationWorker ??
       createModelInvestigationWorker(model, config.workspace),
     dependencies.investigationStages ??
-      createModelInvestigationStages(model, config.workspace, (input) =>
-        getSession().then((current) => current.prepareWorkflowChangeSet(input)),
+      createModelInvestigationStages(model, config.workspace, (input, trace) =>
+        getSession().then((current) => current.prepareWorkflowChangeSet(input, trace)),
       ),
     lifecycle,
   );

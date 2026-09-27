@@ -16,6 +16,7 @@ import {
   type InvestigationWorkerRunner,
 } from "./investigation.js";
 import { resolveWorkspaceRoot } from "./workspace-root.js";
+import { createToolTrace } from "./tool-trace.js";
 import { verifyWorkflowChangeSet } from "./workflow-verification.js";
 
 const temporaryWorkspaces: string[] = [];
@@ -78,9 +79,53 @@ describe("parallel investigation", () => {
       await worker(
         { id: "code", title: "Code path", brief: "Inspect code" },
         "Add priority",
-        () => {},
+        createToolTrace([]),
       ),
     ).toBe("Read-only findings");
+  });
+
+  it("records a worker's executed Tool Call beside its report", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agent-lab-investigation-"));
+    temporaryWorkspaces.push(workspace);
+    let step = 0;
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        step += 1;
+        return {
+          content: step === 1
+            ? [{
+                type: "tool-call" as const,
+                toolCallId: "list-files-1",
+                toolName: "listFiles",
+                input: JSON.stringify({}),
+              }]
+            : [{ type: "text" as const, text: "Found the Workspace files." }],
+          finishReason: {
+            unified: step === 1 ? "tool-calls" as const : "stop" as const,
+            raw: undefined,
+          },
+          warnings: [],
+          usage: {
+            inputTokens: { total: 5, noCache: 5, cacheRead: undefined, cacheWrite: undefined },
+            outputTokens: { total: 4, text: 4, reasoning: undefined },
+          },
+        };
+      },
+    });
+    const service = createInvestigationService(
+      createModelInvestigationWorker(model, await resolveWorkspaceRoot(workspace)),
+    );
+    const run = service.start("Inspect files");
+    await vi.waitFor(() => expect(service.get(run.id)?.status).toBe("completed"));
+    expect(service.get(run.id)?.workers[0]).toMatchObject({
+      report: "Found the Workspace files.",
+      toolTrace: [{
+        name: "listFiles",
+        status: "completed",
+        input: {},
+        output: { ok: true, result: { files: [] } },
+      }],
+    });
   });
 
   it("uses structured coordinator output to assign two distinct briefs", async () => {
@@ -118,9 +163,21 @@ describe("parallel investigation", () => {
   it("starts both workers before either completes and keeps their reports separate", async () => {
     const started: string[] = [];
     const release = new Map<string, (value: string) => void>();
-    const runWorker: InvestigationWorkerRunner = (worker, _objective, onToolUse) => {
+    const runWorker: InvestigationWorkerRunner = (worker, _objective, trace) => {
       started.push(worker.id);
-      onToolUse("readFile");
+      const toolCall = {
+        toolCallId: `${worker.id}-read`,
+        toolName: "readFile",
+        input: { path: "src/tasks.ts" },
+      };
+      trace.onStart({ toolCall } as Parameters<typeof trace.onStart>[0]);
+      trace.onEnd({
+        toolCall,
+        toolOutput: {
+          type: "tool-result",
+          output: { ok: true, result: { content: "task source" } },
+        },
+      } as Parameters<typeof trace.onEnd>[0]);
       return new Promise<string>((resolve) => release.set(worker.id, resolve));
     };
     const service = createInvestigationService(runWorker);
@@ -148,7 +205,12 @@ describe("parallel investigation", () => {
       "Code report",
       "Tests report",
     ]);
-    expect(service.get(run.id)?.workers[0].toolsUsed).toEqual(["readFile"]);
+    expect(service.get(run.id)?.workers[0].toolTrace[0]).toMatchObject({
+      name: "readFile",
+      status: "completed",
+      input: { path: "src/tasks.ts" },
+      output: { ok: true, result: { content: "task source" } },
+    });
     expect(service.start("Next objective").status).toBe("running");
   });
 
@@ -291,7 +353,10 @@ describe("parallel investigation", () => {
     service.retry(run.id);
     await vi.waitFor(() => expect(service.get(run.id)?.status).toBe("awaiting_approval"));
     expect({ checks, implementations }).toEqual({ checks: 2, implementations: 1 });
-    expect(review).toHaveBeenCalledWith(expect.objectContaining({ verification: "Tests passed" }));
+    expect(review).toHaveBeenCalledWith(
+      expect.objectContaining({ verification: "Tests passed" }),
+      expect.objectContaining({ onStart: expect.any(Function), onEnd: expect.any(Function) }),
+    );
   });
 
   it("runs proposed example tests in a disposable copy", async () => {
@@ -300,11 +365,16 @@ describe("parallel investigation", () => {
     const original = await readFile(join(example, "package.json"), "utf8");
     const passing = await verifyWorkflowChangeSet(workspace, preparedChangeSet);
     expect(passing).toContain("Passed the example test suite");
+    expect(passing).not.toMatch(/\u001b\[[0-?]*[ -/]*[@-~]/);
     const failing: PendingChangeSet = {
       ...preparedChangeSet,
       operations: [{ kind: "create", path: "tests/failure.test.ts", content: 'import { it, expect } from "vitest"; it("fails", () => expect(1).toBe(2));\n' }],
     };
-    await expect(verifyWorkflowChangeSet(workspace, failing)).rejects.toThrow("failed the example test suite");
+    const failingReport = await verifyWorkflowChangeSet(workspace, failing).catch((error: unknown) =>
+      error instanceof Error ? error.message : String(error),
+    );
+    expect(failingReport).toContain("failed the example test suite");
+    expect(failingReport).not.toMatch(/\u001b\[[0-?]*[ -/]*[@-~]/);
     expect(await readFile(join(example, "package.json"), "utf8")).toBe(original);
     await expect(readFile(join(example, "tests/failure.test.ts"))).rejects.toMatchObject({ code: "ENOENT" });
   });

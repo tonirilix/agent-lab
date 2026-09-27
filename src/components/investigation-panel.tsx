@@ -15,8 +15,10 @@ import type {
   InvestigationWorker,
   InvestigationWorkerStatus,
 } from "../../shared/investigation";
+import type { ToolTraceRecord } from "../../shared/tool-trace";
 import { ChangeSetCard } from "./change-set-card";
 import { MessageMarkdown } from "./message-markdown";
+import { ToolTraceView } from "./tool-trace-entry";
 import { Button } from "./ui/button";
 import { Textarea } from "./ui/textarea";
 
@@ -40,6 +42,18 @@ function StepIcon({ status }: { status: StepStatus }) {
   if (status === "running") return <LoaderCircle className="size-4 animate-spin text-foreground" />;
   if (status === "failed") return <AlertCircle className="size-4 text-destructive" />;
   return <Circle className="size-4 text-muted-foreground/60" />;
+}
+
+function ToolTraceList({ records }: { records?: ToolTraceRecord[] }) {
+  if (records === undefined || records.length === 0) return null;
+  return (
+    <section className="mt-4 border-t border-border pt-3" aria-label="Tool Trace">
+      <p className="mb-2 text-xs font-semibold text-muted-foreground">
+        Tool Trace · {records.length} {records.length === 1 ? "call" : "calls"}
+      </p>
+      {records.map(({ id, ...record }) => <ToolTraceView key={id} {...record} />)}
+    </section>
+  );
 }
 
 function workerStatus(workers: InvestigationWorker[]): StepStatus {
@@ -117,16 +131,23 @@ function StageCard({
         <ChevronDown className="size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
       </summary>
       <div className="border-t border-border px-4 py-4 sm:px-5">
-        {stage.error ? <p className="text-sm text-destructive" role="alert">{stage.error}</p> : null}
+        {stage.error ? (
+          code ? (
+            <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-xl border border-destructive/20 bg-destructive/5 p-4 font-mono text-xs leading-5 text-destructive" role="alert">{stage.error}</pre>
+          ) : (
+            <p className="text-sm text-destructive" role="alert">{stage.error}</p>
+          )
+        ) : null}
         {stage.report ? (
           code ? (
-            <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-xl bg-code p-4 font-mono text-xs leading-5 text-foreground">{stage.report}</pre>
+            <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-xl bg-code p-4 font-mono text-xs leading-5 text-slate-100">{stage.report}</pre>
           ) : (
             <div className="message-markdown text-sm"><MessageMarkdown>{stage.report}</MessageMarkdown></div>
           )
         ) : !stage.error ? (
           <p className="text-sm text-muted-foreground">{stage.status === "running" ? "This step is in progress." : "This step starts after the earlier work finishes."}</p>
         ) : null}
+        <ToolTraceList records={stage.toolTrace} />
       </div>
     </details>
   );
@@ -148,10 +169,10 @@ function WorkerCard({ worker }: { worker: InvestigationWorker }) {
         <ChevronDown className="mt-1 size-4 shrink-0 text-muted-foreground transition-transform group-open:rotate-180" />
       </summary>
       <div className="space-y-3 border-t border-border p-4">
-        {worker.toolsUsed.length ? <p className="text-xs text-muted-foreground">Workspace tools: {worker.toolsUsed.join(" → ")}</p> : null}
         {worker.report ? <div className="message-markdown text-sm"><MessageMarkdown>{worker.report}</MessageMarkdown></div> : null}
         {worker.error ? <p className="text-sm text-destructive" role="alert">{worker.error}</p> : null}
         {!worker.report && !worker.error ? <p className="text-sm text-muted-foreground">{worker.status === "running" ? "Inspecting the Workspace…" : "Waiting for assignment."}</p> : null}
+        <ToolTraceList records={worker.toolTrace} />
       </div>
     </details>
   );
@@ -368,7 +389,7 @@ export function InvestigationPanel({
                   </div>
                   {run.status === "needs_attention" ? (
                     <p className="mb-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-800 dark:text-amber-200" role="alert">
-                      Verification or review did not complete. Retry the failed step or reject this proposal.
+                      Verification or review did not complete. Retry reruns the same proposal. If its tests failed, reject it and start a new workflow with a revised objective.
                     </p>
                   ) : null}
                   <ChangeSetCard
