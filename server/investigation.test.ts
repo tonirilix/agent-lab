@@ -322,6 +322,7 @@ describe("parallel investigation", () => {
       openAiApiKey: "test-key",
     });
     const app = createApp(config, {
+      allowedOrigins: ["http://127.0.0.1:5173"],
       investigationWorker: async (worker) => `${worker.title} findings`,
       investigationStages: {
         plan: async () => "Plan",
@@ -331,14 +332,14 @@ describe("parallel investigation", () => {
     });
     const bad = await app.request("/api/investigations", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", origin: "http://127.0.0.1:5173" },
       body: JSON.stringify({ objective: " " }),
     });
     expect(bad.status).toBe(400);
 
     const response = await app.request("/api/investigations", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", origin: "http://127.0.0.1:5173" },
       body: JSON.stringify({ objective: "Trace the task model" }),
     });
     expect(response.status).toBe(201);

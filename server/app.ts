@@ -31,9 +31,14 @@ type AppDependencies = {
 
 function requireBrowserOrigin(
   allowedOrigins: readonly string[],
+  allowMissingOriginOnGet = false,
 ): MiddlewareHandler {
   return async (context, next) => {
-    if (!allowedOrigins.includes(context.req.header("origin") ?? "")) {
+    const origin = context.req.header("origin");
+    if (
+      !(allowMissingOriginOnGet && context.req.method === "GET" && !origin) &&
+      !allowedOrigins.includes(origin ?? "")
+    ) {
       return context.json({ error: "Browser origin is not allowed." }, 403);
     }
     await next();
@@ -73,7 +78,7 @@ export function createApp(
     app.use("/api/chat", browserOriginGuard);
     app.use("/api/change-sets/*", browserOriginGuard);
     app.use("/api/investigations", browserOriginGuard);
-    app.use("/api/investigations/*", browserOriginGuard);
+    app.use("/api/investigations/*", requireBrowserOrigin(dependencies.allowedOrigins, true));
   }
 
   app.get("/api/config", (context) =>
