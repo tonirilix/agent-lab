@@ -6,6 +6,33 @@ The **Agent workflow** panel asks a coordinator to assign two distinct read-only
 
 This is a learning project for one trusted user on their own machine, not a hosted IDE or a sandbox for untrusted repositories.
 
+## Agent workflow at a glance
+
+```mermaid
+flowchart TD
+    Goal["User submits an objective"] --> Assign["Coordinator assigns two briefs"]
+    Assign --> Code["Code path investigator<br/>read-only"]
+    Assign --> Tests["Tests and risks investigator<br/>read-only"]
+    Code --> Plan["Coordinator combines findings<br/>and writes a plan"]
+    Tests --> Plan
+    Plan --> Propose["Implementer prepares a<br/>validated Change Set"]
+    Propose --> Example{"Bundled example Workspace?"}
+    Example -- Yes --> Verify["Test proposed files<br/>in a disposable copy"]
+    Example -- No --> Unavailable["Record automated verification<br/>as unavailable"]
+    Verify -- Pass --> Review["Independent reviewer checks<br/>diff and verification result"]
+    Unavailable --> Review
+    Verify -- Fail --> Attention["Needs attention<br/>approval blocked"]
+    Review -- Error --> Attention
+    Review -- Complete --> Decision{"Human decision"}
+    Attention --> Retry["Retry only the failed step"]
+    Attention --> Reject["Reject Change Set"]
+    Decision -- Approve --> Apply["Recheck, apply, and verify<br/>Workspace changes"]
+    Decision -- Reject --> Reject
+    Reject --> Unchanged["Workspace unchanged"]
+```
+
+Completed steps and their reports survive a retry. If an earlier step fails before a Change Set exists, the workflow can retry that step but has nothing to reject. The diagram's test step runs only for the bundled example; other Workspaces need manual testing before Approval.
+
 ## A look inside
 
 The transcript keeps the Coding Agent's read-only Tool Calls visible alongside its answer, so you can inspect what it actually used to reach a conclusion.
