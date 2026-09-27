@@ -1,34 +1,25 @@
 import { memo, useState } from "react";
 import { CheckCircle2, ChevronRight, CircleEllipsis, XCircle } from "lucide-react";
 import { getToolName } from "ai";
+import { isToolResultError, type ToolTraceRecord } from "../../shared/tool-trace";
 
 type VisibleToolPart = Parameters<typeof getToolName>[0];
+type ToolTraceViewProps = Omit<ToolTraceRecord, "id">;
 
 function formatted(value: unknown) {
   return JSON.stringify(value, null, 2) ?? "null";
 }
 
-function isStructuredToolError(value: unknown) {
-  return (
-    typeof value === "object" &&
-    value !== null &&
-    "ok" in value &&
-    value.ok === false
-  );
-}
-
-export const ToolTraceEntry = memo(function ToolTraceEntry({
-  part,
-}: {
-  part: VisibleToolPart;
-}) {
+export function ToolTraceView({
+  name,
+  status,
+  input,
+  output,
+  error,
+}: ToolTraceViewProps) {
   const [open, setOpen] = useState(false);
-  const toolName = getToolName(part);
-  const finished = part.state === "output-available";
-  const failed =
-    part.state === "output-error" ||
-    part.state === "output-denied" ||
-    (part.state === "output-available" && isStructuredToolError(part.output));
+  const finished = status === "completed";
+  const failed = status === "failed";
 
   return (
     <details
@@ -44,7 +35,7 @@ export const ToolTraceEntry = memo(function ToolTraceEntry({
         ) : (
           <CircleEllipsis className="size-4 animate-pulse text-muted-foreground" />
         )}
-        <span>Tool Call · {toolName}</span>
+        <span>Tool Call · {name}</span>
         <span className="ml-auto text-xs font-normal text-muted-foreground">
           {failed ? "failed" : finished ? "complete" : "running"}
         </span>
@@ -55,25 +46,46 @@ export const ToolTraceEntry = memo(function ToolTraceEntry({
             Arguments sent by the model
           </p>
           <pre className="max-h-64 overflow-auto rounded-lg bg-background p-3 text-xs">
-            {formatted(part.input)}
+            {formatted(input)}
           </pre>
         </div>
-        {part.state === "output-available" ? (
+        {output === undefined ? null : (
           <div>
             <p className="mb-1 text-xs font-medium text-muted-foreground">
               Bounded result returned to the model
             </p>
             <pre className="max-h-80 overflow-auto rounded-lg bg-background p-3 text-xs">
-              {formatted(part.output)}
+              {formatted(output)}
             </pre>
           </div>
-        ) : null}
-        {part.state === "output-error" ? (
+        )}
+        {error ? (
           <div className="rounded-lg bg-destructive/10 p-3 text-xs text-destructive">
-            {part.errorText}
+            {error}
           </div>
         ) : null}
       </div> : null}
     </details>
+  );
+}
+
+export const ToolTraceEntry = memo(function ToolTraceEntry({
+  part,
+}: {
+  part: VisibleToolPart;
+}) {
+  const status = part.state === "output-available"
+    ? isToolResultError(part.output) ? "failed" : "completed"
+    : part.state === "output-error" || part.state === "output-denied"
+      ? "failed"
+      : "running";
+  return (
+    <ToolTraceView
+      name={getToolName(part)}
+      status={status}
+      input={part.input}
+      output={part.state === "output-available" ? part.output : undefined}
+      error={part.state === "output-error" ? part.errorText : undefined}
+    />
   );
 });

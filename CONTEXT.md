@@ -40,6 +40,10 @@ _Avoid_: Activity feed, logs
 One ordered exchange that begins with user input and ends with a final response, cancellation, failure, or a pending Change Set.
 _Avoid_: Request, run
 
+**Agent Lifecycle**:
+The progression of an Agent Turn or Workflow run through any Change Set decision. Only one Agent Turn, Workflow run, or Change Set decision can be active at a time.
+_Avoid_: Separate Chat and Workflow activity rules
+
 **Example Workspace**:
 A bundled, disposable TypeScript project used to demonstrate and test Agent Lab without modifying Agent Lab itself.
 _Avoid_: Fixture, sandbox, sample repository

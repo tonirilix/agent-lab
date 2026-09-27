@@ -1,4 +1,5 @@
 import type { PendingChangeSet } from "./change-set-contracts.js";
+import type { ToolTraceRecord } from "./tool-trace.js";
 
 export type InvestigationWorkerId = "code" | "tests";
 export type InvestigationWorkerStatus = "queued" | "running" | "completed" | "failed";
@@ -7,6 +8,7 @@ export type InvestigationStage = {
   status: InvestigationWorkerStatus;
   report?: string;
   error?: string;
+  toolTrace?: ToolTraceRecord[];
 };
 
 export type InvestigationWorker = {
@@ -16,7 +18,7 @@ export type InvestigationWorker = {
   status: InvestigationWorkerStatus;
   startedAt?: string;
   finishedAt?: string;
-  toolsUsed: string[];
+  toolTrace: ToolTraceRecord[];
   report?: string;
   error?: string;
 };

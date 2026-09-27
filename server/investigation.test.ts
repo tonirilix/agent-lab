@@ -7,6 +7,7 @@ import { MockLanguageModelV4 } from "ai/test";
 import type { InvestigationRun } from "../shared/investigation.js";
 import type { PendingChangeSet } from "../shared/change-set-contracts.js";
 import { createApp } from "./app.js";
+import { createAgentLifecycle } from "./agent-lifecycle.js";
 import { resolveAgentConfiguration } from "./config.js";
 import {
   createInvestigationService,
@@ -15,6 +16,7 @@ import {
   type InvestigationWorkerRunner,
 } from "./investigation.js";
 import { resolveWorkspaceRoot } from "./workspace-root.js";
+import { createToolTrace } from "./tool-trace.js";
 import { verifyWorkflowChangeSet } from "./workflow-verification.js";
 
 const temporaryWorkspaces: string[] = [];
@@ -26,6 +28,13 @@ const preparedChangeSet: PendingChangeSet = {
   files: [{ kind: "create", path: "src/priority.ts", diff: "+export {};" }],
   warnings: [],
 };
+
+function createTestLifecycle() {
+  return createAgentLifecycle({
+    approve: async () => { throw new Error("Approval is not needed in this test."); },
+    reject: async (id, feedback) => ({ id, status: "rejected" as const, feedback }),
+  });
+}
 
 afterEach(async () => {
   await Promise.all(
@@ -70,9 +79,53 @@ describe("parallel investigation", () => {
       await worker(
         { id: "code", title: "Code path", brief: "Inspect code" },
         "Add priority",
-        () => {},
+        createToolTrace([]),
       ),
     ).toBe("Read-only findings");
+  });
+
+  it("records a worker's executed Tool Call beside its report", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agent-lab-investigation-"));
+    temporaryWorkspaces.push(workspace);
+    let step = 0;
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        step += 1;
+        return {
+          content: step === 1
+            ? [{
+                type: "tool-call" as const,
+                toolCallId: "list-files-1",
+                toolName: "listFiles",
+                input: JSON.stringify({}),
+              }]
+            : [{ type: "text" as const, text: "Found the Workspace files." }],
+          finishReason: {
+            unified: step === 1 ? "tool-calls" as const : "stop" as const,
+            raw: undefined,
+          },
+          warnings: [],
+          usage: {
+            inputTokens: { total: 5, noCache: 5, cacheRead: undefined, cacheWrite: undefined },
+            outputTokens: { total: 4, text: 4, reasoning: undefined },
+          },
+        };
+      },
+    });
+    const service = createInvestigationService(
+      createModelInvestigationWorker(model, await resolveWorkspaceRoot(workspace)),
+    );
+    const run = service.start("Inspect files");
+    await vi.waitFor(() => expect(service.get(run.id)?.status).toBe("completed"));
+    expect(service.get(run.id)?.workers[0]).toMatchObject({
+      report: "Found the Workspace files.",
+      toolTrace: [{
+        name: "listFiles",
+        status: "completed",
+        input: {},
+        output: { ok: true, result: { files: [] } },
+      }],
+    });
   });
 
   it("uses structured coordinator output to assign two distinct briefs", async () => {
@@ -100,7 +153,8 @@ describe("parallel investigation", () => {
       await resolveWorkspaceRoot(workspace),
       async () => preparedChangeSet,
     );
-    expect(await stages.assign!("Add task priority")).toEqual({
+    if (stages.assign === undefined) throw new Error("Assignment stage is missing.");
+    expect(await stages.assign("Add task priority")).toEqual({
       code: "Trace the task model and summary implementation.",
       tests: "Find current tests and priority edge cases.",
     });
@@ -109,9 +163,21 @@ describe("parallel investigation", () => {
   it("starts both workers before either completes and keeps their reports separate", async () => {
     const started: string[] = [];
     const release = new Map<string, (value: string) => void>();
-    const runWorker: InvestigationWorkerRunner = (worker, _objective, onToolUse) => {
+    const runWorker: InvestigationWorkerRunner = (worker, _objective, trace) => {
       started.push(worker.id);
-      onToolUse("readFile");
+      const toolCall = {
+        toolCallId: `${worker.id}-read`,
+        toolName: "readFile",
+        input: { path: "src/tasks.ts" },
+      };
+      trace.onStart({ toolCall } as Parameters<typeof trace.onStart>[0]);
+      trace.onEnd({
+        toolCall,
+        toolOutput: {
+          type: "tool-result",
+          output: { ok: true, result: { content: "task source" } },
+        },
+      } as Parameters<typeof trace.onEnd>[0]);
       return new Promise<string>((resolve) => release.set(worker.id, resolve));
     };
     const service = createInvestigationService(runWorker);
@@ -139,7 +205,12 @@ describe("parallel investigation", () => {
       "Code report",
       "Tests report",
     ]);
-    expect(service.get(run.id)?.workers[0].toolsUsed).toEqual(["readFile"]);
+    expect(service.get(run.id)?.workers[0].toolTrace[0]).toMatchObject({
+      name: "readFile",
+      status: "completed",
+      input: { path: "src/tasks.ts" },
+      output: { ok: true, result: { content: "task source" } },
+    });
     expect(service.start("Next objective").status).toBe("running");
   });
 
@@ -175,6 +246,7 @@ describe("parallel investigation", () => {
 
   it("waits for both findings, then plans, prepares, reviews, and waits for a decision", async () => {
     const order: string[] = [];
+    const lifecycle = createTestLifecycle();
     const service = createInvestigationService(
       async (worker) => {
         order.push(worker.id);
@@ -202,6 +274,7 @@ describe("parallel investigation", () => {
           return "Ready for human review";
         },
       },
+      lifecycle,
     );
     const run = service.start("Add task priority");
     await vi.waitFor(() =>
@@ -221,7 +294,7 @@ describe("parallel investigation", () => {
     expect(() => service.start("Another feature")).toThrow(
       "Decide the pending Change Set before starting another workflow.",
     );
-    service.markChangeSetDecision("prepared-1", "rejected");
+    await lifecycle.reject("prepared-1");
     expect(service.get(run.id)?.status).toBe("rejected");
     expect(service.start("Another feature").status).toBe("running");
   });
@@ -229,6 +302,7 @@ describe("parallel investigation", () => {
   it("keeps a prepared proposal available when review fails and allows retry after rejection", async () => {
     let reviews = 0;
     let implementations = 0;
+    const lifecycle = createTestLifecycle();
     const service = createInvestigationService(
       async (worker) => `${worker.id} findings`,
       {
@@ -240,6 +314,7 @@ describe("parallel investigation", () => {
           return "Ready";
         },
       },
+      lifecycle,
     );
     const run = service.start("Add priority");
     await vi.waitFor(() =>
@@ -253,7 +328,7 @@ describe("parallel investigation", () => {
     service.retry(run.id);
     await vi.waitFor(() => expect(service.get(run.id)?.status).toBe("awaiting_approval"));
     expect({ reviews, implementations }).toEqual({ reviews: 2, implementations: 1 });
-    service.markChangeSetDecision(preparedChangeSet.id, "rejected");
+    await lifecycle.reject(preparedChangeSet.id);
     expect(service.start("Retry").status).toBe("running");
   });
 
@@ -278,7 +353,10 @@ describe("parallel investigation", () => {
     service.retry(run.id);
     await vi.waitFor(() => expect(service.get(run.id)?.status).toBe("awaiting_approval"));
     expect({ checks, implementations }).toEqual({ checks: 2, implementations: 1 });
-    expect(review).toHaveBeenCalledWith(expect.objectContaining({ verification: "Tests passed" }));
+    expect(review).toHaveBeenCalledWith(
+      expect.objectContaining({ verification: "Tests passed" }),
+      expect.objectContaining({ onStart: expect.any(Function), onEnd: expect.any(Function) }),
+    );
   });
 
   it("runs proposed example tests in a disposable copy", async () => {
@@ -287,13 +365,34 @@ describe("parallel investigation", () => {
     const original = await readFile(join(example, "package.json"), "utf8");
     const passing = await verifyWorkflowChangeSet(workspace, preparedChangeSet);
     expect(passing).toContain("Passed the example test suite");
+    expect(passing).not.toMatch(/\u001b\[[0-?]*[ -/]*[@-~]/);
     const failing: PendingChangeSet = {
       ...preparedChangeSet,
       operations: [{ kind: "create", path: "tests/failure.test.ts", content: 'import { it, expect } from "vitest"; it("fails", () => expect(1).toBe(2));\n' }],
     };
-    await expect(verifyWorkflowChangeSet(workspace, failing)).rejects.toThrow("failed the example test suite");
+    const failingReport = await verifyWorkflowChangeSet(workspace, failing).catch((error: unknown) =>
+      error instanceof Error ? error.message : String(error),
+    );
+    expect(failingReport).toContain("failed the example test suite");
+    expect(failingReport).not.toMatch(/\u001b\[[0-?]*[ -/]*[@-~]/);
     expect(await readFile(join(example, "package.json"), "utf8")).toBe(original);
     await expect(readFile(join(example, "tests/failure.test.ts"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("uses Approval's parent-directory rule during disposable verification", async () => {
+    const example = join(dirname(fileURLToPath(import.meta.url)), "../examples/task-list");
+    const workspace = await resolveWorkspaceRoot(example);
+    const proposal: PendingChangeSet = {
+      ...preparedChangeSet,
+      operations: [{
+        kind: "create",
+        path: "missing/priority.ts",
+        content: "export const priority = 'high';\n",
+      }],
+    };
+
+    await expect(verifyWorkflowChangeSet(workspace, proposal))
+      .rejects.toThrow("Parent directory does not exist");
   });
 
   it("stops before spawning workers when task assignment fails", async () => {
@@ -353,6 +452,44 @@ describe("parallel investigation", () => {
       { id: "code", report: "Code path findings" },
       { id: "tests", report: "Tests and risks findings" },
     ]);
+  });
+
+  it("pauses Chat while Workflow automation is active", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agent-lab-investigation-"));
+    temporaryWorkspaces.push(workspace);
+    const config = await resolveAgentConfiguration({ workspace, openAiApiKey: "test-key" });
+    const releaseWorkers: Array<(report: string) => void> = [];
+    const app = createApp(config, {
+      investigationWorker: () => new Promise((resolve) => releaseWorkers.push(resolve)),
+      investigationStages: {
+        plan: async () => "Plan",
+        implement: async () => preparedChangeSet,
+        review: async () => "Reviewed",
+      },
+    });
+
+    const response = await app.request("/api/investigations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ objective: "Add priority" }),
+    });
+    expect(response.status).toBe(201);
+    await vi.waitFor(() => expect(releaseWorkers).toHaveLength(2));
+
+    const chat = await app.request("/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [] }),
+    });
+    expect(chat.status).toBe(409);
+    expect(await chat.json()).toEqual({ error: "Another Agent Turn or workflow is active." });
+
+    releaseWorkers.forEach((release) => release("Findings"));
+    const run = (await response.json()) as InvestigationRun;
+    await vi.waitFor(async () => {
+      const progress = await app.request(`/api/investigations/${run.id}`);
+      expect(((await progress.json()) as InvestigationRun).status).toBe("awaiting_approval");
+    });
   });
 
   it("exposes targeted retry and blocks approval while verification has failed", async () => {

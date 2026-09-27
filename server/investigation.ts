@@ -10,6 +10,11 @@ import type { WorkspaceRoot } from "./workspace-root.js";
 import { createWorkspaceTools } from "./workspace-tools.js";
 import { createReadOnlyAgentTools } from "./read-only-agent-tools.js";
 import { verifyWorkflowChangeSet } from "./workflow-verification.js";
+import { createToolTrace, type ToolTrace } from "./tool-trace.js";
+import {
+  AgentLifecycleBusyError,
+  type AgentLifecycle,
+} from "./agent-lifecycle.js";
 
 const BRIEFS = [
   {
@@ -27,7 +32,7 @@ const BRIEFS = [
 export type InvestigationWorkerRunner = (
   worker: Pick<InvestigationWorker, "id" | "title" | "brief">,
   objective: string,
-  onToolUse: (name: string) => void,
+  trace: ToolTrace,
 ) => Promise<string>;
 
 export type InvestigationStages = {
@@ -37,7 +42,7 @@ export type InvestigationStages = {
     objective: string;
     plan: string;
     findings: string[];
-  }) => Promise<PendingChangeSet>;
+  }, trace: ToolTrace) => Promise<PendingChangeSet>;
   verify?: (changeSet: PendingChangeSet) => Promise<string>;
   review: (input: {
     objective: string;
@@ -45,7 +50,7 @@ export type InvestigationStages = {
     findings: string[];
     changeSet: PendingChangeSet;
     verification: string;
-  }) => Promise<string>;
+  }, trace: ToolTrace) => Promise<string>;
 };
 
 export class ActiveInvestigationError extends Error {
@@ -67,9 +72,9 @@ export function createModelInvestigationWorker(
   workspace: WorkspaceRoot,
 ): InvestigationWorkerRunner {
   let workspaceTools: ReturnType<typeof createWorkspaceTools> | undefined;
-  return async (worker, objective, onToolUse) => {
+  return async (worker, objective, trace) => {
     workspaceTools ??= createWorkspaceTools(workspace);
-    const tools = createReadOnlyAgentTools(await workspaceTools, onToolUse);
+    const tools = createReadOnlyAgentTools(await workspaceTools);
     const result = await generateText({
       model,
       instructions: [
@@ -81,6 +86,8 @@ export function createModelInvestigationWorker(
       ].join(" "),
       prompt: `User objective: ${objective}`,
       tools,
+      onToolExecutionStart: trace.onStart,
+      onToolExecutionEnd: trace.onEnd,
       stopWhen: isStepCount(6),
       maxOutputTokens: 1_000,
       abortSignal: AbortSignal.timeout(90_000),
@@ -127,7 +134,7 @@ export function createModelInvestigationStages(
     },
     implement,
     verify: (changeSet) => verifyWorkflowChangeSet(workspace, changeSet),
-    async review({ objective, plan, findings, changeSet, verification }) {
+    async review({ objective, plan, findings, changeSet, verification }, trace) {
       workspaceTools ??= createWorkspaceTools(workspace);
       const proposedDiff = changeSet.files
         .map((file) => `${file.path}\n${file.diff}`)
@@ -155,6 +162,8 @@ export function createModelInvestigationStages(
           `Proposed diff:\n${proposedDiff}`,
         ].join("\n\n"),
         tools: createReadOnlyAgentTools(await workspaceTools),
+        onToolExecutionStart: trace.onStart,
+        onToolExecutionEnd: trace.onEnd,
         stopWhen: isStepCount(6),
         maxOutputTokens: 1_200,
         abortSignal: AbortSignal.timeout(90_000),
@@ -168,6 +177,10 @@ export function createModelInvestigationStages(
 export function createInvestigationService(
   runWorker: InvestigationWorkerRunner,
   stages?: InvestigationStages,
+  lifecycle?: Pick<
+    AgentLifecycle,
+    "beginWorkflow" | "registerWorkflowChangeSet" | "markWorkflowReady"
+  >,
 ) {
   const runs = new Map<string, InvestigationRun>();
   let activeId: string | null = null;
@@ -193,7 +206,7 @@ export function createInvestigationService(
     }
   }
 
-  async function advance(run: InvestigationRun) {
+  async function advance(run: InvestigationRun, releaseWorkflow?: () => void) {
     try {
       if (run.stages) {
         await executeStage(run.stages.assignment, async () => {
@@ -208,12 +221,14 @@ export function createInvestigationService(
       await Promise.all(run.workers.filter((worker) => worker.status !== "completed").map(async (worker) => {
         worker.status = "running";
         worker.error = undefined;
-        worker.toolsUsed = [];
+        worker.toolTrace = [];
         worker.startedAt = new Date().toISOString();
         try {
-          worker.report = await runWorker(worker, run.objective, (name) => {
-            worker.toolsUsed.push(name);
-          });
+          worker.report = await runWorker(
+            worker,
+            run.objective,
+            createToolTrace(worker.toolTrace),
+          );
           worker.status = "completed";
         } catch (error) {
           worker.error = error instanceof Error ? error.message : String(error);
@@ -231,30 +246,52 @@ export function createInvestigationService(
         return;
       }
 
-      const findings = run.workers.map((worker) => worker.report!);
+      const findings = run.workers.map((worker) => {
+        if (worker.report === undefined) {
+          throw new Error(`${worker.title} finished without a report.`);
+        }
+        return worker.report;
+      });
       const { coordinator, implementer, verification, reviewer } = run.stages;
       await executeStage(coordinator, () => stages.plan(run.objective, findings));
+      const plan = coordinator.report;
+      if (plan === undefined) throw new Error("Coordinator finished without a plan.");
       await executeStage(implementer, async () => {
+        implementer.toolTrace = [];
         run.changeSet = await stages.implement({
           objective: run.objective,
-          plan: coordinator.report!,
+          plan,
           findings,
+        }, createToolTrace(implementer.toolTrace));
+        lifecycle?.registerWorkflowChangeSet(run.changeSet.id, (decision) => {
+          run.status = decision === "approved" ? "completed" : "rejected";
+          run.finishedAt = new Date().toISOString();
         });
         return `Prepared Change Set ${run.changeSet.id}.`;
       });
+      const changeSet = run.changeSet;
+      if (changeSet === undefined) throw new Error("Implementer finished without a Change Set.");
       await executeStage(verification, () =>
         stages.verify
-          ? stages.verify(run.changeSet!)
+          ? stages.verify(changeSet)
           : Promise.resolve("Automated verification is not configured."),
       );
-      await executeStage(reviewer, () => stages.review({
-        objective: run.objective,
-        plan: coordinator.report!,
-        findings,
-        changeSet: run.changeSet!,
-        verification: verification.report!,
-      }));
+      const verificationReport = verification.report;
+      if (verificationReport === undefined) {
+        throw new Error("Verification finished without a report.");
+      }
+      await executeStage(reviewer, () => {
+        reviewer.toolTrace = [];
+        return stages.review({
+          objective: run.objective,
+          plan,
+          findings,
+          changeSet,
+          verification: verificationReport,
+        }, createToolTrace(reviewer.toolTrace));
+      });
       run.status = "awaiting_approval";
+      lifecycle?.markWorkflowReady(changeSet.id);
     } catch {
       run.status = run.changeSet ? "needs_attention" : "failed";
     } finally {
@@ -263,15 +300,25 @@ export function createInvestigationService(
         run.finishedAt = run.automationFinishedAt;
       }
       activeId = null;
+      releaseWorkflow?.();
     }
   }
 
   function launch(run: InvestigationRun) {
+    let releaseWorkflow: (() => void) | undefined;
+    try {
+      releaseWorkflow = lifecycle?.beginWorkflow();
+    } catch (error) {
+      if (error instanceof AgentLifecycleBusyError) {
+        throw new ActiveInvestigationError(error.message);
+      }
+      throw error;
+    }
     run.status = "running";
     run.automationFinishedAt = undefined;
     run.finishedAt = undefined;
     activeId = run.id;
-    void advance(run);
+    void advance(run, releaseWorkflow);
     return snapshot(run);
   }
 
@@ -298,7 +345,7 @@ export function createInvestigationService(
         workers: BRIEFS.map((brief) => ({
           ...brief,
           status: "queued",
-          toolsUsed: [],
+          toolTrace: [],
         })),
         ...(stages
           ? {
@@ -313,12 +360,17 @@ export function createInvestigationService(
           : {}),
       };
       runs.set(run.id, run);
-      while (runs.size > 10) {
-        const oldest = runs.keys().next().value;
-        if (oldest) runs.delete(oldest);
+      try {
+        const started = launch(run);
+        while (runs.size > 10) {
+          const oldest = runs.keys().next().value;
+          if (oldest) runs.delete(oldest);
+        }
+        return started;
+      } catch (error) {
+        runs.delete(run.id);
+        throw error;
       }
-
-      return launch(run);
     },
 
     retry(id: string) {
@@ -337,21 +389,6 @@ export function createInvestigationService(
     get(id: string) {
       const run = runs.get(id);
       return run ? snapshot(run) : null;
-    },
-
-    canApproveChangeSet(changeSetId: string) {
-      const run = [...runs.values()].find((item) => item.changeSet?.id === changeSetId);
-      return !run || run.status === "awaiting_approval";
-    },
-
-    markChangeSetDecision(changeSetId: string, decision: "approved" | "rejected") {
-      const run = [...runs.values()].find(
-        (item) => item.changeSet?.id === changeSetId,
-      );
-      if (run) {
-        run.status = decision === "approved" ? "completed" : "rejected";
-        run.finishedAt = new Date().toISOString();
-      }
     },
   };
 }

@@ -17,6 +17,8 @@ import { createAgentSession, MAX_AGENT_STEPS } from "./agent-session.js";
 import { resolveWorkspaceRoot } from "./workspace-root.js";
 import type { ChangeOperation } from "../shared/change-set-contracts.js";
 import { CONTEXT_WARNING_CHARACTERS } from "../shared/agent-policy.js";
+import type { ToolTraceRecord } from "../shared/tool-trace.js";
+import { createToolTrace } from "./tool-trace.js";
 
 const temporaryWorkspaces: string[] = [];
 const usage = {
@@ -248,6 +250,42 @@ afterEach(async () => {
 });
 
 describe("Agent session", () => {
+  it("explains when the implementer reads files but stops before proposing", async () => {
+    const workspace = await workspaceWithSource();
+    let step = 0;
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        step += 1;
+        return {
+          content: step === 1
+            ? [{
+                type: "tool-call" as const,
+                toolCallId: "read-tasks",
+                toolName: "readFile",
+                input: JSON.stringify({ path: "src/tasks.ts" }),
+              }]
+            : [{ type: "text" as const, text: "I inspected the file." }],
+          finishReason: {
+            unified: step === 1 ? "tool-calls" as const : "stop" as const,
+            raw: undefined,
+          },
+          warnings: [],
+          usage,
+        };
+      },
+    });
+    const session = await createAgentSession({
+      model,
+      workspace: await resolveWorkspaceRoot(workspace),
+    });
+
+    await expect(session.prepareWorkflowChangeSet({
+      objective: "Add priority",
+      plan: "Change src/tasks.ts",
+      findings: ["src/tasks.ts contains tasks"],
+    })).rejects.toThrow("model stopped after 2 steps without calling proposeChangeSet");
+  });
+
   it("prepares a workflow Change Set without writing until explicit Approval", async () => {
     const workspace = await workspaceWithSource();
     const model = new MockLanguageModelV4({
@@ -335,17 +373,28 @@ describe("Agent session", () => {
       model,
       workspace: await resolveWorkspaceRoot(workspace),
     });
+    const records: ToolTraceRecord[] = [];
     const proposal = await session.prepareWorkflowChangeSet({
       objective: "Update tasks",
       plan: "Modify the tasks list",
       findings: ["src/tasks.ts contains tasks", "Check existing tests"],
-    });
+    }, createToolTrace(records));
 
     expect(step).toBe(2);
     expect(proposal.operations[0]).toMatchObject({
       kind: "modify",
       path: "src/tasks.ts",
       originalFingerprint: fingerprint(original),
+    });
+    expect(records.map((record) => record.name)).toEqual(["readFile", "proposeChangeSet"]);
+    expect(records[0]).toMatchObject({
+      status: "completed",
+      input: { path: "src/tasks.ts" },
+      output: { ok: true, result: { content: original } },
+    });
+    expect(records[1]).toMatchObject({
+      status: "completed",
+      output: { ok: true, changeSet: { id: proposal.id } },
     });
     expect(await readFile(join(workspace, "src", "tasks.ts"), "utf8")).toBe(original);
   });
