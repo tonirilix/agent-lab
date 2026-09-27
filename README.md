@@ -2,36 +2,7 @@
 
 Agent Lab is a small, real local Coding Agent built to make the agent loop understandable. A React chat streams responses from an OpenAI model through a local Node server. The model can inspect one explicitly selected Workspace with bounded read-only Tools, but it cannot write during ordinary conversation. A file change requires a structured Change Set, review, and explicit Approval of that exact revision.
 
-The **Agent workflow** panel asks a coordinator to assign two distinct read-only investigations for one objective. One worker traces the code path; the other finds tests and risks. They run concurrently. After both report, the coordinator writes an implementation plan, an implementer prepares one Change Set, automated verification runs for the bundled example, and an independent reviewer assesses the diff and verification result. The panel shows each stage's status, findings, or error. A failed step can be retried without repeating completed work. The user still decides whether to approve the exact Change Set; the workflow never applies files on its own.
-
 This is a learning project for one trusted user on their own machine, not a hosted IDE or a sandbox for untrusted repositories.
-
-## Agent workflow at a glance
-
-```mermaid
-flowchart TD
-    Goal["User submits an objective"] --> Assign["Coordinator assigns two briefs"]
-    Assign --> Code["Code path investigator<br/>read-only"]
-    Assign --> Tests["Tests and risks investigator<br/>read-only"]
-    Code --> Plan["Coordinator combines findings<br/>and writes a plan"]
-    Tests --> Plan
-    Plan --> Propose["Implementer prepares a<br/>validated Change Set"]
-    Propose --> Example{"Bundled example Workspace?"}
-    Example -- Yes --> Verify["Test proposed files<br/>in a disposable copy"]
-    Example -- No --> Unavailable["Record automated verification<br/>as unavailable"]
-    Verify -- Pass --> Review["Independent reviewer checks<br/>diff and verification result"]
-    Unavailable --> Review
-    Verify -- Fail --> Attention["Needs attention<br/>approval blocked"]
-    Review -- Error --> Attention
-    Review -- Complete --> Decision{"Human decision"}
-    Attention --> Retry["Retry only the failed step"]
-    Attention --> Reject["Reject Change Set"]
-    Decision -- Approve --> Apply["Recheck, apply, and verify<br/>Workspace changes"]
-    Decision -- Reject --> Reject
-    Reject --> Unchanged["Workspace unchanged"]
-```
-
-Completed steps and their reports survive a retry. If an earlier step fails before a Change Set exists, the workflow can retry that step but has nothing to reject. The diagram's test step runs only for the bundled example; other Workspaces need manual testing before Approval.
 
 ## A look inside
 
@@ -129,6 +100,35 @@ The authorization sequence is deliberately narrow:
 Workspace paths are canonicalized beneath the selected root. Symlink escapes, ignored files, Git internals, dependencies, secret-bearing names, private keys, binary or invalid UTF-8 content, and oversized files are excluded. Agent Lab never runs shell commands for the model and never stages or commits Git changes. Unrelated existing work is left alone.
 
 Tool-read source stays local until a Tool reads it; that bounded Tool result is then included in the conversation sent to OpenAI. Agent Lab records no telemetry of its own. Conversations are ephemeral and the complete bounded transcript remains in memory without hidden summarization; the UI warns before it becomes too large for another reliable turn.
+
+## Agent workflow
+
+The **Agent workflow** panel asks a coordinator to assign two distinct read-only investigations for one objective. One worker traces the code path; the other finds tests and risks. They run concurrently. After both report, the coordinator writes an implementation plan, an implementer prepares one Change Set, automated verification runs for the bundled example, and an independent reviewer assesses the diff and verification result. The panel shows each stage's status, findings, or error. A failed step can be retried without repeating completed work. The user still decides whether to approve the exact Change Set; the workflow never applies files on its own.
+
+```mermaid
+flowchart TD
+    Goal["User submits an objective"] --> Assign["Coordinator assigns two briefs"]
+    Assign --> Code["Code path investigator<br/>read-only"]
+    Assign --> Tests["Tests and risks investigator<br/>read-only"]
+    Code --> Plan["Coordinator combines findings<br/>and writes a plan"]
+    Tests --> Plan
+    Plan --> Propose["Implementer prepares a<br/>validated Change Set"]
+    Propose --> Example{"Bundled example Workspace?"}
+    Example -- Yes --> Verify["Test proposed files<br/>in a disposable copy"]
+    Example -- No --> Unavailable["Record automated verification<br/>as unavailable"]
+    Verify -- Pass --> Review["Independent reviewer checks<br/>diff and verification result"]
+    Unavailable --> Review
+    Verify -- Fail --> Attention["Needs attention<br/>approval blocked"]
+    Review -- Error --> Attention
+    Review -- Complete --> Decision{"Human decision"}
+    Attention --> Retry["Retry only the failed step"]
+    Attention --> Reject["Reject Change Set"]
+    Decision -- Approve --> Apply["Recheck, apply, and verify<br/>Workspace changes"]
+    Decision -- Reject --> Reject
+    Reject --> Unchanged["Workspace unchanged"]
+```
+
+Completed steps and their reports survive a retry. If an earlier step fails before a Change Set exists, the workflow can retry that step but has nothing to reject. The diagram's test step runs only for the bundled example; other Workspaces need manual testing before Approval.
 
 ## Guided real-OpenAI exercise
 
