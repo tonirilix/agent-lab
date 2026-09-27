@@ -13,6 +13,7 @@ import {
 import { Badge } from "./components/ui/badge";
 import { ChatWorkspace } from "./components/chat-workspace";
 import { AgentConfigurationSheet } from "./components/agent-configuration-sheet";
+import { InvestigationPanel } from "./components/investigation-panel";
 
 function basename(path: string) {
   return path.split("/").filter(Boolean).at(-1) ?? path;
@@ -149,12 +150,15 @@ export function App() {
               </div>
             </div>
           ) : (
-            <ChatWorkspace
-              model={config.model}
-              contextWarningCharacters={
-                config.agent.safetyLimits.contextWarningCharacters
-              }
-            />
+            <>
+              <InvestigationPanel />
+              <ChatWorkspace
+                model={config.model}
+                contextWarningCharacters={
+                  config.agent.safetyLimits.contextWarningCharacters
+                }
+              />
+            </>
           )}
         </div>
       </section>

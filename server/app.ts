@@ -11,11 +11,18 @@ import {
 } from "./config.js";
 import { createConfiguredModel } from "./model.js";
 import { ActiveAgentTurnError, createAgentSession } from "./agent-session.js";
+import {
+  ActiveInvestigationError,
+  createInvestigationService,
+  createModelInvestigationWorker,
+  type InvestigationWorkerRunner,
+} from "./investigation.js";
 
 type AppDependencies = {
   model?: LanguageModel;
   allowedOrigins?: readonly string[];
   clientRoot?: string;
+  investigationWorker?: InvestigationWorkerRunner;
 };
 
 function requireBrowserOrigin(
@@ -43,16 +50,65 @@ export function createApp(
           workspace: config.workspace,
         })
       : null;
+  const investigations =
+    model && config.status !== "invalid-workspace"
+      ? createInvestigationService(
+          dependencies.investigationWorker ??
+            createModelInvestigationWorker(model, config.workspace),
+        )
+      : null;
 
   if (dependencies.allowedOrigins?.length) {
     const browserOriginGuard = requireBrowserOrigin(dependencies.allowedOrigins);
     app.use("/api/chat", browserOriginGuard);
     app.use("/api/change-sets/*", browserOriginGuard);
+    app.use("/api/investigations", browserOriginGuard);
   }
 
   app.get("/api/config", (context) =>
     context.json(publicAgentConfiguration(config)),
   );
+
+  app.post("/api/investigations", async (context) => {
+    if (!investigations) {
+      return context.json({ error: "Investigation is unavailable." }, 503);
+    }
+    let body: unknown;
+    try {
+      body = await context.req.json();
+    } catch {
+      return context.json({ error: "Request body must be valid JSON." }, 400);
+    }
+    const objective =
+      body && typeof body === "object" && "objective" in body
+        ? body.objective
+        : undefined;
+    if (
+      typeof objective !== "string" ||
+      !objective.trim() ||
+      objective.trim().length > 2_000
+    ) {
+      return context.json(
+        { error: "objective must be 1 to 2000 characters." },
+        400,
+      );
+    }
+    try {
+      return context.json(investigations.start(objective.trim()), 201);
+    } catch (error) {
+      if (error instanceof ActiveInvestigationError) {
+        return context.json({ error: error.message }, 409);
+      }
+      throw error;
+    }
+  });
+
+  app.get("/api/investigations/:id", (context) => {
+    const run = investigations?.get(context.req.param("id"));
+    return run
+      ? context.json(run)
+      : context.json({ error: "Investigation not found." }, 404);
+  });
 
   app.post("/api/chat", async (context) => {
     if (!model) {
