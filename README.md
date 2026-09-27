@@ -105,30 +105,49 @@ Tool-read source stays local until a Tool reads it; that bounded Tool result is 
 
 The **Agent workflow** panel asks a coordinator to assign two distinct read-only investigations for one objective. One worker traces the code path; the other finds tests and risks. They run concurrently. After both report, the coordinator writes an implementation plan, an implementer prepares one Change Set, automated verification runs for the bundled example, and an independent reviewer assesses the diff and verification result. The panel shows each stage's status, findings, or error. A failed step can be retried without repeating completed work. The user still decides whether to approve the exact Change Set; the workflow never applies files on its own.
 
-```mermaid
-flowchart TD
-    Goal["User submits an objective"] --> Assign["Coordinator assigns two briefs"]
-    Assign --> Code["Code path investigator<br/>read-only"]
-    Assign --> Tests["Tests and risks investigator<br/>read-only"]
-    Code --> Plan["Coordinator combines findings<br/>and writes a plan"]
-    Tests --> Plan
-    Plan --> Propose["Implementer prepares a<br/>validated Change Set"]
-    Propose --> Example{"Bundled example Workspace?"}
-    Example -- Yes --> Verify["Test proposed files<br/>in a disposable copy"]
-    Example -- No --> Unavailable["Record automated verification<br/>as unavailable"]
-    Verify -- Pass --> Review["Independent reviewer checks<br/>diff and verification result"]
-    Unavailable --> Review
-    Verify -- Fail --> Attention["Needs attention<br/>approval blocked"]
-    Review -- Error --> Attention
-    Review -- Complete --> Decision{"Human decision"}
-    Attention --> Retry["Retry only the failed step"]
-    Attention --> Reject["Reject Change Set"]
-    Decision -- Approve --> Apply["Recheck, apply, and verify<br/>Workspace changes"]
-    Decision -- Reject --> Reject
-    Reject --> Unchanged["Workspace unchanged"]
+```text
+User objective
+      |
+      v
+Coordinator assigns two briefs
+      |
+      +---------------------------+
+      |                           |
+      v                           v
+Code path investigator      Tests and risks investigator
+(read-only)                 (read-only)
+      |                           |
+      +-------------+-------------+
+                    |
+                    v
+           Coordinator writes plan
+                    |
+                    v
+      Implementer proposes Change Set
+                    |
+                    v
+        Bundled example Workspace?
+           / yes            \ no
+          v                  v
+  Test proposal in       Verification
+  disposable copy        unavailable
+          | pass              |
+          +---------+---------+
+                    |
+                    v
+       Reviewer checks diff and result
+                    |
+                    v
+              Human decision
+             /              \
+        Approve             Reject
+           |                   |
+           v                   v
+  Recheck, apply,         Workspace
+  verify changes         unchanged
 ```
 
-Completed steps and their reports survive a retry. If an earlier step fails before a Change Set exists, the workflow can retry that step but has nothing to reject. The diagram's test step runs only for the bundled example; other Workspaces need manual testing before Approval.
+If an automated step fails, Approval is blocked and the workflow can retry only that step, retaining completed reports and any prepared Change Set. A prepared Change Set can also be rejected. The test step runs only for the bundled example; other Workspaces need manual testing before Approval.
 
 ## Guided real-OpenAI exercise
 
