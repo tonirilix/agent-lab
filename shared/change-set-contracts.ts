@@ -32,6 +32,31 @@ export const changeSetProposalSchema = z
   })
   .strict();
 
+/** Workflow proposals bind modified files to versions observed by readFile. */
+export const workflowChangeSetDraftSchema = z
+  .object({
+    summary: z.string().trim().min(1).max(500),
+    operations: z.array(z.discriminatedUnion("kind", [
+      z.object({
+        kind: z.literal("create"),
+        path: relativePathSchema,
+        content: z.string(),
+      }).strict(),
+      z.object({
+        kind: z.literal("modify"),
+        path: relativePathSchema,
+        content: z.string(),
+        originalFingerprint: z.string().optional(),
+      }).strict(),
+      z.object({
+        kind: z.literal("delete"),
+        path: relativePathSchema,
+        originalFingerprint: z.string().optional(),
+      }).strict(),
+    ])).min(1).max(MAX_CHANGE_OPERATIONS),
+  })
+  .strict();
+
 export const pendingChangeSetSchema = changeSetProposalSchema.extend({
   id: z.string(),
   status: z.literal("pending"),

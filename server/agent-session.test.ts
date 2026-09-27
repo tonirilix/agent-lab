@@ -294,6 +294,158 @@ describe("Agent session", () => {
     );
   });
 
+  it("uses the file version the implementer read when its proposed fingerprint is malformed", async () => {
+    const workspace = await workspaceWithSource();
+    const original = "export const tasks = ['learn'];\n";
+    let step = 0;
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        step += 1;
+        return {
+          content: [
+            step === 1
+              ? {
+                  type: "tool-call" as const,
+                  toolCallId: "read-original",
+                  toolName: "readFile",
+                  input: JSON.stringify({ path: "src/tasks.ts" }),
+                }
+              : {
+                  type: "tool-call" as const,
+                  toolCallId: "propose-edit",
+                  toolName: "proposeChangeSet",
+                  input: JSON.stringify({
+                    summary: "Update tasks",
+                    operations: [{
+                      kind: "modify",
+                      path: "src/tasks.ts",
+                      originalFingerprint: "not-a-valid-hash",
+                      content: "export const tasks = ['learn', 'review'];\n",
+                    }],
+                  }),
+                },
+          ],
+          finishReason: { unified: "tool-calls" as const, raw: undefined },
+          warnings: [],
+          usage,
+        };
+      },
+    });
+    const session = await createAgentSession({
+      model,
+      workspace: await resolveWorkspaceRoot(workspace),
+    });
+    const proposal = await session.prepareWorkflowChangeSet({
+      objective: "Update tasks",
+      plan: "Modify the tasks list",
+      findings: ["src/tasks.ts contains tasks", "Check existing tests"],
+    });
+
+    expect(step).toBe(2);
+    expect(proposal.operations[0]).toMatchObject({
+      kind: "modify",
+      path: "src/tasks.ts",
+      originalFingerprint: fingerprint(original),
+    });
+    expect(await readFile(join(workspace, "src", "tasks.ts"), "utf8")).toBe(original);
+  });
+
+  it("rejects a workflow proposal when the file changes after the implementer reads it", async () => {
+    const workspace = await workspaceWithSource();
+    const sourcePath = join(workspace, "src", "tasks.ts");
+    const userContent = "export const tasks = ['user change'];\n";
+    let step = 0;
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        step += 1;
+        if (step === 2) await writeFile(sourcePath, userContent);
+        return {
+          content: step === 3
+            ? [{ type: "text" as const, text: "Could not prepare the change." }]
+            : [{
+                type: "tool-call" as const,
+                toolCallId: `workflow-${step}`,
+                toolName: step === 1 ? "readFile" : "proposeChangeSet",
+                input: JSON.stringify(
+                  step === 1
+                    ? { path: "src/tasks.ts" }
+                    : {
+                        summary: "Update tasks",
+                        operations: [{
+                          kind: "modify",
+                          path: "src/tasks.ts",
+                          content: "export const tasks = ['agent change'];\n",
+                        }],
+                      },
+                ),
+              }],
+          finishReason: {
+            unified: step === 3 ? "stop" as const : "tool-calls" as const,
+            raw: undefined,
+          },
+          warnings: [],
+          usage,
+        };
+      },
+    });
+    const session = await createAgentSession({
+      model,
+      workspace: await resolveWorkspaceRoot(workspace),
+    });
+
+    await expect(session.prepareWorkflowChangeSet({
+      objective: "Update tasks",
+      plan: "Modify the tasks list",
+      findings: ["src/tasks.ts contains tasks", "Check tests"],
+    })).rejects.toThrow("Original fingerprint does not match the current file");
+    expect(session.getPendingChangeSet()).toBeNull();
+    expect(await readFile(sourcePath, "utf8")).toBe(userContent);
+  });
+
+  it("requires an observed file version before a workflow modification", async () => {
+    const workspace = await workspaceWithSource();
+    let step = 0;
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => {
+        step += 1;
+        return {
+          content: step === 1
+            ? [{
+                type: "tool-call" as const,
+                toolCallId: "unread-proposal",
+                toolName: "proposeChangeSet",
+                input: JSON.stringify({
+                  summary: "Modify tasks",
+                  operations: [{
+                    kind: "modify",
+                    path: "src/tasks.ts",
+                    content: "export const tasks = ['changed'];\n",
+                  }],
+                }),
+              }]
+            : [{ type: "text" as const, text: "Could not propose." }],
+          finishReason: {
+            unified: step === 1 ? "tool-calls" as const : "stop" as const,
+            raw: undefined,
+          },
+          warnings: [],
+          usage,
+        };
+      },
+    });
+    const session = await createAgentSession({
+      model,
+      workspace: await resolveWorkspaceRoot(workspace),
+    });
+
+    await expect(session.prepareWorkflowChangeSet({
+      objective: "Modify tasks",
+      plan: "Update src/tasks.ts",
+      findings: ["Tasks are in src/tasks.ts", "Check tests"],
+    })).rejects.toThrow("Read src/tasks.ts before proposing a modify operation.");
+    expect(session.getPendingChangeSet()).toBeNull();
+  });
+
   it("publishes completed Agent Turn diagnostics with aggregated usage", async () => {
     const workspace = await workspaceWithSource();
 

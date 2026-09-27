@@ -11,6 +11,7 @@ import {
 } from "ai";
 import {
   changeSetProposalSchema,
+  workflowChangeSetDraftSchema,
   type PendingChangeSet,
 } from "../shared/change-set-contracts.js";
 import {
@@ -188,12 +189,14 @@ export async function createAgentSession({
       activeTurn = true;
       let prepared: PendingChangeSet | undefined;
       let validationError: string | undefined;
+      const observedFingerprints = new Map<string, string>();
       try {
         await generateText({
           model,
           instructions: [
             "You are the implementation worker in Agent Lab.",
-            "Use read-only Workspace tools to inspect files and fingerprints before proposing one complete Change Set.",
+            "Read every existing file you intend to modify or delete before proposing one complete Change Set.",
+            "Do not calculate or copy originalFingerprint values; the server binds proposals to the file versions returned by readFile.",
             "The Change Set should satisfy the objective and include appropriate tests.",
             "You cannot write files. proposeChangeSet only prepares a reviewable proposal; the user must approve it separately.",
           ].join(" "),
@@ -205,14 +208,38 @@ export async function createAgentSession({
             ),
           ].join("\n\n"),
           tools: {
-            ...readOnlyTools,
+            ...createReadOnlyAgentTools(workspaceTools, undefined, (file) => {
+              observedFingerprints.set(file.path, file.fingerprint);
+            }),
             proposeChangeSet: tool({
               description:
-                "Prepare one structured Change Set for human review. This never writes files.",
-              inputSchema: jsonSchema(zodSchema(changeSetProposalSchema).jsonSchema),
+                "Prepare one structured Change Set for human review. Read existing files first; omit originalFingerprint. This never writes files.",
+              inputSchema: jsonSchema(zodSchema(workflowChangeSetDraftSchema).jsonSchema),
               execute: async (candidate) => {
                 try {
-                  prepared = await changeSets.prepare(candidate);
+                  const parsed = workflowChangeSetDraftSchema.safeParse(candidate);
+                  if (!parsed.success) {
+                    throw new ChangeSetValidationError(
+                      `Invalid Change Set structure: ${parsed.error.issues
+                        .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+                        .join("; ")}`,
+                    );
+                  }
+                  const operations = parsed.data.operations.map((operation) => {
+                    if (operation.kind === "create") return operation;
+                    const originalFingerprint = observedFingerprints.get(operation.path);
+                    if (!originalFingerprint) {
+                      throw new ChangeSetValidationError(
+                        `Read ${operation.path} before proposing a ${operation.kind} operation.`,
+                      );
+                    }
+                    const { originalFingerprint: _ignored, ...draft } = operation;
+                    return { ...draft, originalFingerprint };
+                  });
+                  prepared = await changeSets.prepare({
+                    summary: parsed.data.summary,
+                    operations,
+                  });
                   return { ok: true, changeSet: prepared };
                 } catch (error) {
                   if (error instanceof ChangeSetValidationError) {

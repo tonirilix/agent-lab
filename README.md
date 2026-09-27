@@ -108,6 +108,8 @@ Use the bundled `examples/task-list` Workspace so every Change Set is disposable
 
 For the orchestration exercise, open **Agent workflow** and run its prefilled task-priority objective. Watch both investigators run in parallel, followed by the coordinator, implementer, and reviewer. Inspect the proposed diff and review report before approving or rejecting. The reviewer inspects source and the diff; it does not run tests. Workflow records are held in server memory for this local session; the ten most recent runs are retained until restart. Only one workflow runs at a time, and a pending Change Set must be decided before another starts.
 
+For workflow Change Sets, the implementer must read each existing file before proposing a modification or deletion. The server uses the fingerprint from that read and rejects a proposal if the file has changed since. Model-generated fingerprints are ignored. This keeps the approval tied to the file version the implementer inspected.
+
 1. Start Agent Lab with the development command above and confirm the header shows `task-list`, OpenAI, and your configured model.
 2. Open **Agent Configuration**. Inspect the effective instruction policy, four Tool capabilities, Safety Limits, and telemetry status.
 3. Send: “Inspect this Workspace and explain its task model. Do not propose changes.” Expand each Tool Trace to compare the exact arguments and bounded result with the answer. No file should change.

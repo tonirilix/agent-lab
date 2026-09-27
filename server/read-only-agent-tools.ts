@@ -29,6 +29,7 @@ async function runWorkspaceTool<T>(
 export function createReadOnlyAgentTools(
   workspaceTools: WorkspaceTools,
   onUse?: (name: string) => void,
+  onReadFile?: (file: { path: string; fingerprint: string }) => void,
 ): ToolSet {
   return {
     listFiles: tool({
@@ -58,12 +59,14 @@ export function createReadOnlyAgentTools(
           .max(MAX_TOOL_PATH_LENGTH)
           .describe("Relative file path in the Workspace"),
       }),
-      execute: (input, { abortSignal }) => {
+      execute: async (input, { abortSignal }) => {
         onUse?.("readFile");
-        return runWorkspaceTool(
+        const output = await runWorkspaceTool(
           () => workspaceTools.readFile(input, { signal: abortSignal }),
           abortSignal,
         );
+        if (output.ok) onReadFile?.(output.result);
+        return output;
       },
     }),
     searchCode: tool({
