@@ -7,3 +7,4 @@ dist/
 coverage/
 node_modules/
 .DS_Store
+.agent-lab-verify-*/

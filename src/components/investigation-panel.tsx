@@ -70,6 +70,23 @@ export function InvestigationPanel() {
     }
   }
 
+  async function retry() {
+    if (!run || submitting) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      setRun(await readRun(await fetch(`/api/investigations/${run.id}/retry`, { method: "POST" })));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const canRetry = run && (run.status === "failed" || run.status === "needs_attention") &&
+    (run.workers.some((worker) => worker.status === "failed") ||
+      Object.values(run.stages ?? {}).some((stage) => stage.status === "failed"));
+
   return (
     <section className="shrink-0 border-b border-border bg-card" aria-label="Agent workflow">
       <button
@@ -86,8 +103,7 @@ export function InvestigationPanel() {
       {open ? (
         <div className="max-h-[48vh] space-y-3 overflow-y-auto border-t border-border px-5 py-4 sm:px-8">
           <p className="text-xs leading-5 text-muted-foreground">
-            Two workers inspect in parallel. A coordinator then plans, an implementer prepares a Change Set, and a reviewer assesses it before your approval.
-            The reviewer does not run tests.
+            Two workers inspect in parallel. A coordinator plans, an implementer prepares a Change Set, verification tests the proposal in a disposable copy when supported, and a reviewer assesses it before your approval.
           </p>
           <form
             className="space-y-2"
@@ -119,10 +135,13 @@ export function InvestigationPanel() {
               ) : null}
               {run?.status === "running"
                 ? "Running workflow"
-                : run?.status === "failed" || run?.status === "rejected"
-                  ? "Retry workflow"
-                  : "Run workflow"}
+                : "Run workflow"}
             </Button>
+            {canRetry ? (
+              <Button type="button" size="sm" variant="outline" disabled={submitting} onClick={() => void retry()}>
+                Retry failed step
+              </Button>
+            ) : null}
           </form>
           {error ? <p className="text-sm text-destructive" role="alert">{error}</p> : null}
           {run ? (
@@ -157,6 +176,7 @@ export function InvestigationPanel() {
                     ["assignment", "Assignment"],
                     ["coordinator", "Coordinator"],
                     ["implementer", "Implementer"],
+                    ["verification", "Verification"],
                     ["reviewer", "Reviewer"],
                   ] as const).map(([id, title]) => {
                     const stage = run.stages![id];
@@ -183,16 +203,17 @@ export function InvestigationPanel() {
                 <div>
                   {run.status === "needs_attention" ? (
                     <p className="mb-2 text-sm text-amber-700 dark:text-amber-300" role="alert">
-                      Reviewer did not complete. Inspect the proposal before deciding.
+                      Automation needs attention. Inspect the failed step and proposal before deciding or retrying.
                     </p>
                   ) : null}
                   <ChangeSetCard
                     key={run.changeSet.id}
                     changeSet={run.changeSet}
                     toolInput={{ objective: run.objective }}
-                    toolOutput={{ coordinator: run.stages?.coordinator.report, reviewer: run.stages?.reviewer.report }}
+                    toolOutput={{ coordinator: run.stages?.coordinator.report, verification: run.stages?.verification.report, reviewer: run.stages?.reviewer.report }}
                     onRejected={() => setRun((current) => current ? { ...current, status: "rejected" } : current)}
                     onApplied={() => setRun((current) => current ? { ...current, status: "completed" } : current)}
+                    approvalDisabled={run.status !== "awaiting_approval"}
                     completionMessage="Applied and verified."
                   />
                 </div>

@@ -2,7 +2,7 @@
 
 Agent Lab is a small, real local Coding Agent built to make the agent loop understandable. A React chat streams responses from an OpenAI model through a local Node server. The model can inspect one explicitly selected Workspace with bounded read-only Tools, but it cannot write during ordinary conversation. A file change requires a structured Change Set, review, and explicit Approval of that exact revision.
 
-The **Agent workflow** panel asks a coordinator to assign two distinct read-only investigations for one objective. One worker traces the code path; the other finds tests and risks. They run concurrently. After both report, the coordinator writes an implementation plan, an implementer prepares one Change Set, and an independent reviewer assesses its diff. The panel shows each stage's status, findings, or error. The user still decides whether to approve the exact Change Set; the workflow never applies files on its own.
+The **Agent workflow** panel asks a coordinator to assign two distinct read-only investigations for one objective. One worker traces the code path; the other finds tests and risks. They run concurrently. After both report, the coordinator writes an implementation plan, an implementer prepares one Change Set, automated verification runs for the bundled example, and an independent reviewer assesses the diff and verification result. The panel shows each stage's status, findings, or error. A failed step can be retried without repeating completed work. The user still decides whether to approve the exact Change Set; the workflow never applies files on its own.
 
 This is a learning project for one trusted user on their own machine, not a hosted IDE or a sandbox for untrusted repositories.
 
@@ -83,6 +83,7 @@ Important modules:
 - `server/workspace-tools.ts` exposes bounded file listing, UTF-8 reads, and code search.
 - `server/change-set.ts` owns proposal validation and Approval identity.
 - `server/workspace-transaction.ts` applies and verifies the complete Change Set or rolls it back.
+- `server/investigation.ts` coordinates workflow stages and targeted retries; `server/workflow-verification.ts` tests example proposals in a disposable copy.
 - `shared/` contains contracts and the public Agent policy used by both sides.
 
 The production model adapter is OpenAI. The deterministic AI SDK mock used by the automated suite is test-only infrastructure; it is never selected by the application runtime.
@@ -106,7 +107,7 @@ Tool-read source stays local until a Tool reads it; that bounded Tool result is 
 
 Use the bundled `examples/task-list` Workspace so every Change Set is disposable.
 
-For the orchestration exercise, open **Agent workflow** and run its prefilled task-priority objective. Watch both investigators run in parallel, followed by the coordinator, implementer, and reviewer. Inspect the proposed diff and review report before approving or rejecting. The reviewer inspects source and the diff; it does not run tests. Workflow records are held in server memory for this local session; the ten most recent runs are retained until restart. Only one workflow runs at a time, and a pending Change Set must be decided before another starts.
+For the orchestration exercise, open **Agent workflow** and run its prefilled task-priority objective. Watch both investigators run in parallel, followed by the coordinator, implementer, verification, and reviewer. Verification applies the proposed operations to a disposable copy of the bundled example and runs its Vitest suite before human approval; the live Workspace is not changed by normal test runs. These tests execute proposed code with your local user permissions, so the copy is not a security sandbox. Inspect the test result, proposed diff, and review report before approving or rejecting. If a step fails, **Retry failed step** resumes from that point and preserves completed reports and the proposal. Approval stays blocked until verification and review complete. Other selected Workspaces show that automated verification is unavailable, so run their tests manually. Workflow records are held in server memory for this local session; the ten most recent runs are retained until restart. Only one workflow runs at a time, and a pending Change Set must be decided before another starts.
 
 For workflow Change Sets, the implementer must read each existing file before proposing a modification or deletion. The server uses the fingerprint from that read and rejects a proposal if the file has changed since. Model-generated fingerprints are ignored. This keeps the approval tied to the file version the implementer inspected.
 

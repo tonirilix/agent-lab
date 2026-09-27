@@ -13,6 +13,7 @@ import { createConfiguredModel } from "./model.js";
 import { ActiveAgentTurnError, createAgentSession } from "./agent-session.js";
 import {
   ActiveInvestigationError,
+  InvestigationRetryError,
   createInvestigationService,
   createModelInvestigationStages,
   createModelInvestigationWorker,
@@ -72,6 +73,7 @@ export function createApp(
     app.use("/api/chat", browserOriginGuard);
     app.use("/api/change-sets/*", browserOriginGuard);
     app.use("/api/investigations", browserOriginGuard);
+    app.use("/api/investigations/*", browserOriginGuard);
   }
 
   app.get("/api/config", (context) =>
@@ -117,6 +119,19 @@ export function createApp(
     return run
       ? context.json(run)
       : context.json({ error: "Investigation not found." }, 404);
+  });
+
+  app.post("/api/investigations/:id/retry", (context) => {
+    if (!investigations) return context.json({ error: "Investigation is unavailable." }, 503);
+    try {
+      return context.json(investigations.retry(context.req.param("id")));
+    } catch (error) {
+      if (error instanceof InvestigationRetryError) {
+        return context.json({ error: error.message }, error.message === "Investigation not found." ? 404 : 409);
+      }
+      if (error instanceof ActiveInvestigationError) return context.json({ error: error.message }, 409);
+      throw error;
+    }
   });
 
   app.post("/api/chat", async (context) => {
@@ -194,6 +209,9 @@ export function createApp(
   app.post("/api/change-sets/:id/approve", async (context) => {
     if (!agentSession) {
       return context.json({ error: "Agent session is unavailable." }, 503);
+    }
+    if (investigations && !investigations.canApproveChangeSet(context.req.param("id"))) {
+      return context.json({ error: "Workflow verification and review must complete before approval." }, 409);
     }
     try {
       const result = await (await agentSession).approveChangeSet(

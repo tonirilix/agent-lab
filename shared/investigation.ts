@@ -39,6 +39,7 @@ export type InvestigationRun = {
     assignment: InvestigationStage;
     coordinator: InvestigationStage;
     implementer: InvestigationStage;
+    verification: InvestigationStage;
     reviewer: InvestigationStage;
   };
   changeSet?: PendingChangeSet;

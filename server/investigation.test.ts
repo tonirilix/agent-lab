@@ -1,6 +1,7 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MockLanguageModelV4 } from "ai/test";
 import type { InvestigationRun } from "../shared/investigation.js";
@@ -14,6 +15,7 @@ import {
   type InvestigationWorkerRunner,
 } from "./investigation.js";
 import { resolveWorkspaceRoot } from "./workspace-root.js";
+import { verifyWorkflowChangeSet } from "./workflow-verification.js";
 
 const temporaryWorkspaces: string[] = [];
 const preparedChangeSet: PendingChangeSet = {
@@ -154,6 +156,23 @@ describe("parallel investigation", () => {
     ]);
   });
 
+  it("retries only the failed worker and preserves completed findings", async () => {
+    const attempts = { code: 0, tests: 0 };
+    const service = createInvestigationService(async (worker) => {
+      attempts[worker.id]++;
+      if (worker.id === "code" && attempts.code === 1) throw new Error("Temporary failure");
+      return `${worker.id} findings`;
+    });
+    const run = service.start("Inspect priority");
+    await vi.waitFor(() => expect(service.get(run.id)?.status).toBe("failed"));
+    expect(service.retry(run.id).id).toBe(run.id);
+    await vi.waitFor(() => expect(service.get(run.id)?.status).toBe("completed"));
+    expect(attempts).toEqual({ code: 2, tests: 1 });
+    expect(service.get(run.id)?.workers.map((worker) => worker.report)).toEqual([
+      "code findings", "tests findings",
+    ]);
+  });
+
   it("waits for both findings, then plans, prepares, reviews, and waits for a decision", async () => {
     const order: string[] = [];
     const service = createInvestigationService(
@@ -208,12 +227,18 @@ describe("parallel investigation", () => {
   });
 
   it("keeps a prepared proposal available when review fails and allows retry after rejection", async () => {
+    let reviews = 0;
+    let implementations = 0;
     const service = createInvestigationService(
       async (worker) => `${worker.id} findings`,
       {
         plan: async () => "Plan",
-        implement: async () => preparedChangeSet,
-        review: async () => { throw new Error("Reviewer timed out"); },
+        implement: async () => { implementations++; return preparedChangeSet; },
+        review: async () => {
+          reviews++;
+          if (reviews === 1) throw new Error("Reviewer timed out");
+          return "Ready";
+        },
       },
     );
     const run = service.start("Add priority");
@@ -225,8 +250,50 @@ describe("parallel investigation", () => {
     expect(() => service.start("Retry")).toThrow(
       "Decide the pending Change Set before starting another workflow.",
     );
+    service.retry(run.id);
+    await vi.waitFor(() => expect(service.get(run.id)?.status).toBe("awaiting_approval"));
+    expect({ reviews, implementations }).toEqual({ reviews: 2, implementations: 1 });
     service.markChangeSetDecision(preparedChangeSet.id, "rejected");
     expect(service.start("Retry").status).toBe("running");
+  });
+
+  it("stops on failed verification and resumes it without preparing another proposal", async () => {
+    let checks = 0;
+    let implementations = 0;
+    const review = vi.fn(async () => "Reviewed");
+    const service = createInvestigationService(async (worker) => `${worker.id} findings`, {
+      plan: async () => "Plan",
+      implement: async () => { implementations++; return preparedChangeSet; },
+      verify: async () => {
+        checks++;
+        if (checks === 1) throw new Error("Tests failed");
+        return "Tests passed";
+      },
+      review,
+    });
+    const run = service.start("Add priority");
+    await vi.waitFor(() => expect(service.get(run.id)?.status).toBe("needs_attention"));
+    expect(service.get(run.id)?.stages?.verification.error).toBe("Tests failed");
+    expect(review).not.toHaveBeenCalled();
+    service.retry(run.id);
+    await vi.waitFor(() => expect(service.get(run.id)?.status).toBe("awaiting_approval"));
+    expect({ checks, implementations }).toEqual({ checks: 2, implementations: 1 });
+    expect(review).toHaveBeenCalledWith(expect.objectContaining({ verification: "Tests passed" }));
+  });
+
+  it("runs proposed example tests in a disposable copy", async () => {
+    const example = join(dirname(fileURLToPath(import.meta.url)), "../examples/task-list");
+    const workspace = await resolveWorkspaceRoot(example);
+    const original = await readFile(join(example, "package.json"), "utf8");
+    const passing = await verifyWorkflowChangeSet(workspace, preparedChangeSet);
+    expect(passing).toContain("Passed the example test suite");
+    const failing: PendingChangeSet = {
+      ...preparedChangeSet,
+      operations: [{ kind: "create", path: "tests/failure.test.ts", content: 'import { it, expect } from "vitest"; it("fails", () => expect(1).toBe(2));\n' }],
+    };
+    await expect(verifyWorkflowChangeSet(workspace, failing)).rejects.toThrow("failed the example test suite");
+    expect(await readFile(join(example, "package.json"), "utf8")).toBe(original);
+    await expect(readFile(join(example, "tests/failure.test.ts"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("stops before spawning workers when task assignment fails", async () => {
@@ -285,5 +352,43 @@ describe("parallel investigation", () => {
       { id: "code", report: "Code path findings" },
       { id: "tests", report: "Tests and risks findings" },
     ]);
+  });
+
+  it("exposes targeted retry and blocks approval while verification has failed", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agent-lab-investigation-"));
+    temporaryWorkspaces.push(workspace);
+    const config = await resolveAgentConfiguration({ workspace, openAiApiKey: "test-key" });
+    let checks = 0;
+    const app = createApp(config, {
+      investigationWorker: async (worker) => `${worker.id} findings`,
+      investigationStages: {
+        plan: async () => "Plan",
+        implement: async () => preparedChangeSet,
+        verify: async () => {
+          checks++;
+          if (checks === 1) throw new Error("Test failure");
+          return "Tests passed";
+        },
+        review: async () => "Reviewed",
+      },
+    });
+    const started = await app.request("/api/investigations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ objective: "Add priority" }),
+    });
+    const run = (await started.json()) as InvestigationRun;
+    await vi.waitFor(async () => {
+      const response = await app.request(`/api/investigations/${run.id}`);
+      expect(((await response.json()) as InvestigationRun).status).toBe("needs_attention");
+    });
+    expect((await app.request(`/api/change-sets/${preparedChangeSet.id}/approve`, { method: "POST" })).status).toBe(409);
+    expect((await app.request("/api/investigations/missing/retry", { method: "POST" })).status).toBe(404);
+    expect((await app.request(`/api/investigations/${run.id}/retry`, { method: "POST" })).status).toBe(200);
+    await vi.waitFor(async () => {
+      const response = await app.request(`/api/investigations/${run.id}`);
+      expect(((await response.json()) as InvestigationRun).status).toBe("awaiting_approval");
+    });
+    expect(checks).toBe(2);
   });
 });

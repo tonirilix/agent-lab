@@ -9,6 +9,7 @@ import type { PendingChangeSet } from "../shared/change-set-contracts.js";
 import type { WorkspaceRoot } from "./workspace-root.js";
 import { createWorkspaceTools } from "./workspace-tools.js";
 import { createReadOnlyAgentTools } from "./read-only-agent-tools.js";
+import { verifyWorkflowChangeSet } from "./workflow-verification.js";
 
 const BRIEFS = [
   {
@@ -37,11 +38,13 @@ export type InvestigationStages = {
     plan: string;
     findings: string[];
   }) => Promise<PendingChangeSet>;
+  verify?: (changeSet: PendingChangeSet) => Promise<string>;
   review: (input: {
     objective: string;
     plan: string;
     findings: string[];
     changeSet: PendingChangeSet;
+    verification: string;
   }) => Promise<string>;
 };
 
@@ -49,6 +52,13 @@ export class ActiveInvestigationError extends Error {
   constructor(message = "An investigation is already running.") {
     super(message);
     this.name = "ActiveInvestigationError";
+  }
+}
+
+export class InvestigationRetryError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvestigationRetryError";
   }
 }
 
@@ -116,7 +126,8 @@ export function createModelInvestigationStages(
       return result.text.trim();
     },
     implement,
-    async review({ objective, plan, findings, changeSet }) {
+    verify: (changeSet) => verifyWorkflowChangeSet(workspace, changeSet),
+    async review({ objective, plan, findings, changeSet, verification }) {
       workspaceTools ??= createWorkspaceTools(workspace);
       const proposedDiff = changeSet.files
         .map((file) => `${file.path}\n${file.diff}`)
@@ -133,13 +144,14 @@ export function createModelInvestigationStages(
           "Inspect the proposed Change Set against the objective, plan, and current Workspace files.",
           "Look for logic errors, missed edge cases, inadequate tests, and unrelated changes.",
           "State specific concerns with file paths. Say whether the proposal appears ready for human review.",
-          "You cannot approve or apply changes. Do not claim that tests ran.",
+          "You cannot approve or apply changes. Report verification accurately; do not claim tests ran unless the verification report says they did.",
         ].join(" "),
         prompt: [
           `Objective: ${objective}`,
           `Plan: ${plan}`,
           ...findings.map((finding, index) => `Investigation ${index + 1}: ${finding}`),
           `Proposed Change Set summary: ${changeSet.summary}`,
+          `Verification: ${verification}`,
           `Proposed diff:\n${proposedDiff}`,
         ].join("\n\n"),
         tools: createReadOnlyAgentTools(await workspaceTools),
@@ -162,6 +174,105 @@ export function createInvestigationService(
 
   function snapshot(run: InvestigationRun): InvestigationRun {
     return structuredClone(run);
+  }
+
+  async function executeStage(
+    stage: NonNullable<InvestigationRun["stages"]>[keyof NonNullable<InvestigationRun["stages"]>],
+    task: () => Promise<string>,
+  ) {
+    if (stage.status === "completed") return;
+    stage.status = "running";
+    stage.error = undefined;
+    try {
+      stage.report = await task();
+      stage.status = "completed";
+    } catch (error) {
+      stage.status = "failed";
+      stage.error = error instanceof Error ? error.message : String(error);
+      throw error;
+    }
+  }
+
+  async function advance(run: InvestigationRun) {
+    try {
+      if (run.stages) {
+        await executeStage(run.stages.assignment, async () => {
+          if (!stages?.assign) return "Used the default investigation briefs.";
+          const briefs = await stages.assign(run.objective);
+          run.workers[0].brief = briefs.code;
+          run.workers[1].brief = briefs.tests;
+          return "Assigned separate code and test investigations.";
+        });
+      }
+
+      await Promise.all(run.workers.filter((worker) => worker.status !== "completed").map(async (worker) => {
+        worker.status = "running";
+        worker.error = undefined;
+        worker.toolsUsed = [];
+        worker.startedAt = new Date().toISOString();
+        try {
+          worker.report = await runWorker(worker, run.objective, (name) => {
+            worker.toolsUsed.push(name);
+          });
+          worker.status = "completed";
+        } catch (error) {
+          worker.error = error instanceof Error ? error.message : String(error);
+          worker.status = "failed";
+        } finally {
+          worker.finishedAt = new Date().toISOString();
+        }
+      }));
+      if (run.workers.some((worker) => worker.status === "failed")) {
+        run.status = "failed";
+        return;
+      }
+      if (!stages || !run.stages) {
+        run.status = "completed";
+        return;
+      }
+
+      const findings = run.workers.map((worker) => worker.report!);
+      const { coordinator, implementer, verification, reviewer } = run.stages;
+      await executeStage(coordinator, () => stages.plan(run.objective, findings));
+      await executeStage(implementer, async () => {
+        run.changeSet = await stages.implement({
+          objective: run.objective,
+          plan: coordinator.report!,
+          findings,
+        });
+        return `Prepared Change Set ${run.changeSet.id}.`;
+      });
+      await executeStage(verification, () =>
+        stages.verify
+          ? stages.verify(run.changeSet!)
+          : Promise.resolve("Automated verification is not configured."),
+      );
+      await executeStage(reviewer, () => stages.review({
+        objective: run.objective,
+        plan: coordinator.report!,
+        findings,
+        changeSet: run.changeSet!,
+        verification: verification.report!,
+      }));
+      run.status = "awaiting_approval";
+    } catch {
+      run.status = run.changeSet ? "needs_attention" : "failed";
+    } finally {
+      run.automationFinishedAt = new Date().toISOString();
+      if (run.status === "failed" || run.status === "completed") {
+        run.finishedAt = run.automationFinishedAt;
+      }
+      activeId = null;
+    }
+  }
+
+  function launch(run: InvestigationRun) {
+    run.status = "running";
+    run.automationFinishedAt = undefined;
+    run.finishedAt = undefined;
+    activeId = run.id;
+    void advance(run);
+    return snapshot(run);
   }
 
   return {
@@ -195,123 +306,42 @@ export function createInvestigationService(
                 assignment: { status: "queued" as const },
                 coordinator: { status: "queued" as const },
                 implementer: { status: "queued" as const },
+                verification: { status: "queued" as const },
                 reviewer: { status: "queued" as const },
               },
             }
           : {}),
       };
       runs.set(run.id, run);
-      activeId = run.id;
       while (runs.size > 10) {
         const oldest = runs.keys().next().value;
         if (oldest) runs.delete(oldest);
       }
 
-      void (async () => {
-        try {
-          if (stages?.assign && run.stages) {
-            const assignment = run.stages.assignment;
-            assignment.status = "running";
-            try {
-              const briefs = await stages.assign(objective);
-              run.workers[0].brief = briefs.code;
-              run.workers[1].brief = briefs.tests;
-              assignment.report = "Assigned separate code and test investigations.";
-              assignment.status = "completed";
-            } catch (error) {
-              assignment.status = "failed";
-              assignment.error = error instanceof Error ? error.message : String(error);
-              throw error;
-            }
-          } else if (run.stages) {
-            run.stages.assignment.status = "completed";
-            run.stages.assignment.report = "Used the default investigation briefs.";
-          }
+      return launch(run);
+    },
 
-          await Promise.all(
-            run.workers.map(async (worker) => {
-              worker.status = "running";
-              worker.startedAt = new Date().toISOString();
-              try {
-                worker.report = await runWorker(worker, objective, (name) => {
-                  worker.toolsUsed.push(name);
-                });
-                worker.status = "completed";
-              } catch (error) {
-                worker.error =
-                  error instanceof Error ? error.message : "Investigation failed.";
-                worker.status = "failed";
-              } finally {
-                worker.finishedAt = new Date().toISOString();
-              }
-            }),
-          );
-          if (run.workers.some((worker) => worker.status === "failed")) {
-            run.status = "failed";
-            return;
-          }
-          if (!stages || !run.stages) {
-            run.status = "completed";
-            return;
-          }
-          const findings = run.workers.map((worker) => worker.report!);
-          const coordinator = run.stages.coordinator;
-          coordinator.status = "running";
-          try {
-            coordinator.report = await stages.plan(objective, findings);
-            coordinator.status = "completed";
-          } catch (error) {
-            coordinator.status = "failed";
-            coordinator.error = error instanceof Error ? error.message : String(error);
-            throw error;
-          }
-          const implementer = run.stages.implementer;
-          implementer.status = "running";
-          try {
-            run.changeSet = await stages.implement({
-              objective,
-              plan: coordinator.report,
-              findings,
-            });
-            implementer.report = `Prepared Change Set ${run.changeSet.id}.`;
-            implementer.status = "completed";
-          } catch (error) {
-            implementer.status = "failed";
-            implementer.error = error instanceof Error ? error.message : String(error);
-            throw error;
-          }
-          const reviewer = run.stages.reviewer;
-          reviewer.status = "running";
-          try {
-            reviewer.report = await stages.review({
-              objective,
-              plan: coordinator.report,
-              findings,
-              changeSet: run.changeSet,
-            });
-            reviewer.status = "completed";
-            run.status = "awaiting_approval";
-          } catch (error) {
-            reviewer.status = "failed";
-            reviewer.error = error instanceof Error ? error.message : String(error);
-            run.status = "needs_attention";
-          }
-        } catch {
-          run.status = run.changeSet ? "needs_attention" : "failed";
-        } finally {
-          run.automationFinishedAt = new Date().toISOString();
-          if (run.status === "failed" || run.status === "completed") {
-            run.finishedAt = run.automationFinishedAt;
-          }
-          activeId = null;
-        }
-      })();
-      return snapshot(run);
+    retry(id: string) {
+      const run = runs.get(id);
+      if (!run) throw new InvestigationRetryError("Investigation not found.");
+      if (activeId) throw new ActiveInvestigationError();
+      if (run.status !== "failed" && run.status !== "needs_attention") {
+        throw new InvestigationRetryError("Only a failed workflow can be retried.");
+      }
+      const failed = run.workers.some((worker) => worker.status === "failed") ||
+        Object.values(run.stages ?? {}).some((stage) => stage.status === "failed");
+      if (!failed) throw new InvestigationRetryError("No failed step to retry.");
+      return launch(run);
     },
 
     get(id: string) {
       const run = runs.get(id);
       return run ? snapshot(run) : null;
+    },
+
+    canApproveChangeSet(changeSetId: string) {
+      const run = [...runs.values()].find((item) => item.changeSet?.id === changeSetId);
+      return !run || run.status === "awaiting_approval";
     },
 
     markChangeSetDecision(changeSetId: string, decision: "approved" | "rejected") {
