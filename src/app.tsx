@@ -1,8 +1,10 @@
 import {
   AlertCircle,
   Bot,
+  FlaskConical,
   FolderGit2,
   KeyRound,
+  MessagesSquare,
   ShieldCheck,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -13,6 +15,8 @@ import {
 import { Badge } from "./components/ui/badge";
 import { ChatWorkspace } from "./components/chat-workspace";
 import { AgentConfigurationSheet } from "./components/agent-configuration-sheet";
+import { InvestigationPanel } from "./components/investigation-panel";
+import type { InvestigationRun } from "../shared/investigation";
 
 function basename(path: string) {
   return path.split("/").filter(Boolean).at(-1) ?? path;
@@ -21,6 +25,16 @@ function basename(path: string) {
 export function App() {
   const [config, setConfig] = useState<PublicAgentConfiguration | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [activeView, setActiveView] = useState<"chat" | "workflow">("chat");
+  const [workflowStatus, setWorkflowStatus] = useState<InvestigationRun["status"] | null>(null);
+
+  const workflowNotice = workflowStatus === "running"
+    ? "Running"
+    : workflowStatus === "awaiting_approval"
+      ? "Review"
+      : workflowStatus === "needs_attention" || workflowStatus === "failed"
+        ? "Attention"
+        : null;
 
   useEffect(() => {
     fetch("/api/config")
@@ -149,12 +163,75 @@ export function App() {
               </div>
             </div>
           ) : (
-            <ChatWorkspace
-              model={config.model}
-              contextWarningCharacters={
-                config.agent.safetyLimits.contextWarningCharacters
-              }
-            />
+            <>
+              <div
+                role="tablist"
+                aria-label="Agent Lab views"
+                className="flex shrink-0 gap-1 border-b border-border bg-surface px-5 pt-2 sm:px-8"
+                onKeyDown={(event) => {
+                  const next = event.key === "ArrowRight" || event.key === "ArrowLeft"
+                    ? activeView === "chat" ? "workflow" : "chat"
+                      : event.key === "Home" ? "chat"
+                        : event.key === "End" ? "workflow" : null;
+                  if (!next) return;
+                  event.preventDefault();
+                  setActiveView(next);
+                  document.getElementById(`${next}-view-tab`)?.focus();
+                }}
+              >
+                <button
+                  id="chat-view-tab"
+                  type="button"
+                  role="tab"
+                  aria-selected={activeView === "chat"}
+                  aria-controls="chat-view-panel"
+                  tabIndex={activeView === "chat" ? 0 : -1}
+                  onClick={() => setActiveView("chat")}
+                  className={`flex items-center gap-2 rounded-t-xl border border-b-0 px-4 py-2.5 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${activeView === "chat" ? "border-border bg-background text-foreground" : "border-transparent text-muted-foreground hover:bg-subtle hover:text-foreground"}`}
+                >
+                  <MessagesSquare className="size-4" /> Chat
+                </button>
+                <button
+                  id="workflow-view-tab"
+                  type="button"
+                  role="tab"
+                  aria-selected={activeView === "workflow"}
+                  aria-controls="workflow-view-panel"
+                  tabIndex={activeView === "workflow" ? 0 : -1}
+                  onClick={() => setActiveView("workflow")}
+                  className={`flex items-center gap-2 rounded-t-xl border border-b-0 px-4 py-2.5 text-sm font-medium transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring ${activeView === "workflow" ? "border-border bg-background text-foreground" : "border-transparent text-muted-foreground hover:bg-subtle hover:text-foreground"}`}
+                >
+                  <FlaskConical className="size-4" /> Workflow
+                  {workflowNotice ? (
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${workflowNotice === "Attention" ? "bg-amber-500/15 text-amber-700 dark:text-amber-300" : "bg-subtle text-foreground"}`}>
+                      {workflowNotice}
+                    </span>
+                  ) : null}
+                </button>
+              </div>
+              <div
+                id="chat-view-panel"
+                role="tabpanel"
+                aria-labelledby="chat-view-tab"
+                className={activeView === "chat" ? "flex min-h-0 flex-1 flex-col" : "hidden"}
+              >
+                <ChatWorkspace
+                  model={config.model}
+                  contextWarningCharacters={config.agent.safetyLimits.contextWarningCharacters}
+                />
+              </div>
+              <div
+                id="workflow-view-panel"
+                role="tabpanel"
+                aria-labelledby="workflow-view-tab"
+                className={activeView === "workflow" ? "flex min-h-0 flex-1 flex-col" : "hidden"}
+              >
+                <InvestigationPanel
+                  isExampleWorkspace={config.workspace.replaceAll("\\", "/").endsWith("/examples/task-list")}
+                  onStatusChange={setWorkflowStatus}
+                />
+              </div>
+            </>
           )}
         </div>
       </section>

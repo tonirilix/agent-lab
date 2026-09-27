@@ -57,12 +57,16 @@ export function ChangeSetCard({
   toolOutput,
   onRejected,
   onApplied,
+  approvalDisabled = false,
+  completionMessage = "Applied and verified. OpenAI is preparing the final summary.",
 }: {
   changeSet: PendingChangeSet;
   toolInput: unknown;
   toolOutput: unknown;
   onRejected: (id: string, feedback: string) => void;
   onApplied: (result: AppliedChangeSet) => void;
+  approvalDisabled?: boolean;
+  completionMessage?: string;
 }) {
   const { error, feedback, reject, setFeedback, state } =
     useChangeSetRejection({ changeSetId: changeSet.id, onRejected });
@@ -218,7 +222,7 @@ export function ChangeSetCard({
             </p>
           ) : approval.result ? (
             <p className="flex items-center gap-2 text-sm text-emerald-700 dark:text-emerald-300">
-              <ShieldCheck className="size-4" /> Applied and verified. OpenAI is preparing the final summary.
+              <ShieldCheck className="size-4" /> {completionMessage}
             </p>
           ) : (
             <>
@@ -243,7 +247,7 @@ export function ChangeSetCard({
                 </Button>
                 <Button
                   onClick={() => void approval.approve()}
-                  disabled={state === "rejecting" || approval.state === "approved"}
+                  disabled={approvalDisabled || state === "rejecting" || approval.state === "approved"}
                 >
                   {approval.state === "approved" ? (
                     <Loader2 className="animate-spin" />

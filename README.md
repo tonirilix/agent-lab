@@ -4,6 +4,16 @@ Agent Lab is a small, real local Coding Agent built to make the agent loop under
 
 This is a learning project for one trusted user on their own machine, not a hosted IDE or a sandbox for untrusted repositories.
 
+## A look inside
+
+The transcript keeps the Coding Agent's read-only Tool Calls visible alongside its answer, so you can inspect what it actually used to reach a conclusion.
+
+![A completed Agent Lab inspection with visible listFiles and readFile Tool Calls](docs/screenshots/tool-trace.png)
+
+Open **Agent Configuration** to see the active model, effective instructions, available Tools, and Safety Limits for the current session.
+
+![The Agent Lab Agent Configuration sheet](docs/screenshots/agent-configuration.png)
+
 ## Requirements
 
 - Node.js 20 or newer
@@ -71,6 +81,7 @@ Important modules:
 - `server/workspace-tools.ts` exposes bounded file listing, UTF-8 reads, and code search.
 - `server/change-set.ts` owns proposal validation and Approval identity.
 - `server/workspace-transaction.ts` applies and verifies the complete Change Set or rolls it back.
+- `server/investigation.ts` coordinates workflow stages and targeted retries; `server/workflow-verification.ts` tests example proposals in a disposable copy.
 - `shared/` contains contracts and the public Agent policy used by both sides.
 
 The production model adapter is OpenAI. The deterministic AI SDK mock used by the automated suite is test-only infrastructure; it is never selected by the application runtime.
@@ -90,9 +101,65 @@ Workspace paths are canonicalized beneath the selected root. Symlink escapes, ig
 
 Tool-read source stays local until a Tool reads it; that bounded Tool result is then included in the conversation sent to OpenAI. Agent Lab records no telemetry of its own. Conversations are ephemeral and the complete bounded transcript remains in memory without hidden summarization; the UI warns before it becomes too large for another reliable turn.
 
+## Agent workflow
+
+The separate **Workflow** view asks a coordinator to assign two distinct read-only investigations for one objective. One worker traces the code path; the other finds tests and risks. They run concurrently. After both report, the coordinator writes an implementation plan, an implementer prepares one Change Set, automated verification runs for the bundled example, and an independent reviewer assesses the diff and verification result. The view shows each stage's status, findings, or error. A failed step can be retried without repeating completed work. Chat stays available in its own view, and switching between views preserves both sessions. The user still decides whether to approve the exact Change Set; the workflow never applies files on its own.
+
+The Workflow view with representative run data, ready for human review:
+
+![Agent Lab Workflow view showing parallel investigators and the review stage](docs/screenshots/agent-workflow.png)
+
+```text
+User objective
+      |
+      v
+Coordinator assigns two briefs
+      |
+      +---------------------------+
+      |                           |
+      v                           v
+Code path investigator      Tests and risks investigator
+(read-only)                 (read-only)
+      |                           |
+      +-------------+-------------+
+                    |
+                    v
+           Coordinator writes plan
+                    |
+                    v
+      Implementer proposes Change Set
+                    |
+                    v
+        Bundled example Workspace?
+           / yes            \ no
+          v                  v
+  Test proposal in       Verification
+  disposable copy        unavailable
+          | pass              |
+          +---------+---------+
+                    |
+                    v
+       Reviewer checks diff and result
+                    |
+                    v
+              Human decision
+             /              \
+        Approve             Reject
+           |                   |
+           v                   v
+  Recheck, apply,         Workspace
+  verify changes         unchanged
+```
+
+If an automated step fails, Approval is blocked and the workflow can retry only that step, retaining completed reports and any prepared Change Set. A prepared Change Set can also be rejected. The test step runs only for the bundled example; other Workspaces need manual testing before Approval.
+
 ## Guided real-OpenAI exercise
 
 Use the bundled `examples/task-list` Workspace so every Change Set is disposable.
+
+For the orchestration exercise, open the **Workflow** tab and run its prefilled task-priority objective. Watch both investigators run in parallel, followed by the coordinator, implementer, verification, and reviewer. Verification applies the proposed operations to a disposable copy of the bundled example and runs its Vitest suite before human approval; the live Workspace is not changed by normal test runs. These tests execute proposed code with your local user permissions, so the copy is not a security sandbox. Inspect the test result, proposed diff, and review report before approving or rejecting. If a step fails, **Retry failed step** resumes from that point and preserves completed reports and the proposal. Approval stays blocked until verification and review complete. Other selected Workspaces show that automated verification is unavailable, so run their tests manually. Workflow records are held in server memory for this local session; the ten most recent runs are retained until restart. Only one workflow runs at a time, and a pending Change Set must be decided before another starts.
+
+For workflow Change Sets, the implementer must read each existing file before proposing a modification or deletion. The server uses the fingerprint from that read and rejects a proposal if the file has changed since. Model-generated fingerprints are ignored. This keeps the approval tied to the file version the implementer inspected.
 
 1. Start Agent Lab with the development command above and confirm the header shows `task-list`, OpenAI, and your configured model.
 2. Open **Agent Configuration**. Inspect the effective instruction policy, four Tool capabilities, Safety Limits, and telemetry status.

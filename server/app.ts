@@ -11,18 +11,34 @@ import {
 } from "./config.js";
 import { createConfiguredModel } from "./model.js";
 import { ActiveAgentTurnError, createAgentSession } from "./agent-session.js";
+import {
+  ActiveInvestigationError,
+  InvestigationRetryError,
+  createInvestigationService,
+  createModelInvestigationStages,
+  createModelInvestigationWorker,
+  type InvestigationStages,
+  type InvestigationWorkerRunner,
+} from "./investigation.js";
 
 type AppDependencies = {
   model?: LanguageModel;
   allowedOrigins?: readonly string[];
   clientRoot?: string;
+  investigationWorker?: InvestigationWorkerRunner;
+  investigationStages?: InvestigationStages;
 };
 
 function requireBrowserOrigin(
   allowedOrigins: readonly string[],
+  allowMissingOriginOnGet = false,
 ): MiddlewareHandler {
   return async (context, next) => {
-    if (!allowedOrigins.includes(context.req.header("origin") ?? "")) {
+    const origin = context.req.header("origin");
+    if (
+      !(allowMissingOriginOnGet && context.req.method === "GET" && !origin) &&
+      !allowedOrigins.includes(origin ?? "")
+    ) {
       return context.json({ error: "Browser origin is not allowed." }, 403);
     }
     await next();
@@ -43,16 +59,85 @@ export function createApp(
           workspace: config.workspace,
         })
       : null;
+  const investigations =
+    model && config.status !== "invalid-workspace"
+      ? createInvestigationService(
+          dependencies.investigationWorker ??
+            createModelInvestigationWorker(model, config.workspace),
+          dependencies.investigationStages ??
+            createModelInvestigationStages(model, config.workspace, (input) =>
+              agentSession!.then((session) =>
+                session.prepareWorkflowChangeSet(input),
+              ),
+            ),
+        )
+      : null;
 
   if (dependencies.allowedOrigins?.length) {
     const browserOriginGuard = requireBrowserOrigin(dependencies.allowedOrigins);
     app.use("/api/chat", browserOriginGuard);
     app.use("/api/change-sets/*", browserOriginGuard);
+    app.use("/api/investigations", browserOriginGuard);
+    app.use("/api/investigations/*", requireBrowserOrigin(dependencies.allowedOrigins, true));
   }
 
   app.get("/api/config", (context) =>
     context.json(publicAgentConfiguration(config)),
   );
+
+  app.post("/api/investigations", async (context) => {
+    if (!investigations) {
+      return context.json({ error: "Investigation is unavailable." }, 503);
+    }
+    let body: unknown;
+    try {
+      body = await context.req.json();
+    } catch {
+      return context.json({ error: "Request body must be valid JSON." }, 400);
+    }
+    const objective =
+      body && typeof body === "object" && "objective" in body
+        ? body.objective
+        : undefined;
+    if (
+      typeof objective !== "string" ||
+      !objective.trim() ||
+      objective.trim().length > 2_000
+    ) {
+      return context.json(
+        { error: "objective must be 1 to 2000 characters." },
+        400,
+      );
+    }
+    try {
+      return context.json(investigations.start(objective.trim()), 201);
+    } catch (error) {
+      if (error instanceof ActiveInvestigationError) {
+        return context.json({ error: error.message }, 409);
+      }
+      throw error;
+    }
+  });
+
+  app.get("/api/investigations/:id", (context) => {
+    const run = investigations?.get(context.req.param("id"));
+    return run
+      ? context.json(run)
+      : context.json({ error: "Investigation not found." }, 404);
+  });
+
+  app.post("/api/investigations/:id/retry", (context) => {
+    if (!investigations) return context.json({ error: "Investigation is unavailable." }, 503);
+    try {
+      return context.json(investigations.retry(context.req.param("id")));
+    } catch (error) {
+      if (error instanceof InvestigationRetryError) {
+        return context.json({ error: error.message }, error.message === "Investigation not found." ? 404 : 409);
+      }
+      if (error instanceof ActiveInvestigationError) return context.json({ error: error.message }, 409);
+      throw error;
+    }
+  });
 
   app.post("/api/chat", async (context) => {
     if (!model) {
@@ -112,12 +197,12 @@ export function createApp(
       return context.json({ error: "feedback must be a string" }, 400);
     }
     try {
-      return context.json(
-        await (await agentSession).rejectChangeSet(
-          context.req.param("id"),
-          body.feedback,
-        ),
+      const result = await (await agentSession).rejectChangeSet(
+        context.req.param("id"),
+        body.feedback,
       );
+      investigations?.markChangeSetDecision(result.id, "rejected");
+      return context.json(result);
     } catch (error) {
       if (error instanceof Error) {
         return context.json({ error: error.message }, 409);
@@ -130,10 +215,15 @@ export function createApp(
     if (!agentSession) {
       return context.json({ error: "Agent session is unavailable." }, 503);
     }
+    if (investigations && !investigations.canApproveChangeSet(context.req.param("id"))) {
+      return context.json({ error: "Workflow verification and review must complete before approval." }, 409);
+    }
     try {
-      return context.json(
-        await (await agentSession).approveChangeSet(context.req.param("id")),
+      const result = await (await agentSession).approveChangeSet(
+        context.req.param("id"),
       );
+      investigations?.markChangeSetDecision(result.id, "approved");
+      return context.json(result);
     } catch (error) {
       if (error instanceof Error) {
         return context.json({ error: error.message }, 409);

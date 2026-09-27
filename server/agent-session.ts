@@ -1,5 +1,6 @@
 import {
   convertToModelMessages,
+  generateText,
   isStepCount,
   jsonSchema,
   streamText,
@@ -8,16 +9,17 @@ import {
   type UIMessage,
   zodSchema,
 } from "ai";
-import { z } from "zod";
-import { changeSetProposalSchema } from "../shared/change-set-contracts.js";
+import {
+  changeSetProposalSchema,
+  workflowChangeSetDraftSchema,
+  type PendingChangeSet,
+} from "../shared/change-set-contracts.js";
 import {
   ChangeSetValidationError,
   createChangeSetService,
 } from "./change-set.js";
-import {
-  WorkspaceAccessError,
-  createWorkspaceTools,
-} from "./workspace-tools.js";
+import { createWorkspaceTools } from "./workspace-tools.js";
+import { createReadOnlyAgentTools } from "./read-only-agent-tools.js";
 import type { WorkspaceRoot } from "./workspace-root.js";
 import {
   BASE_AGENT_INSTRUCTIONS,
@@ -27,31 +29,11 @@ import {
 import { createDiagnosticUIStream } from "./turn-diagnostics.js";
 
 export { MAX_AGENT_STEPS } from "../shared/agent-policy.js";
-const MAX_TOOL_PATH_LENGTH = 4_096;
-const MAX_SEARCH_QUERY_LENGTH = 1_000;
 
 export class ActiveAgentTurnError extends Error {
   constructor() {
     super("An Agent Turn is already active.");
     this.name = "ActiveAgentTurnError";
-  }
-}
-
-async function runWorkspaceTool<T>(
-  operation: () => Promise<T>,
-  abortSignal?: AbortSignal,
-) {
-  try {
-    return { ok: true as const, result: await operation() };
-  } catch (error) {
-    if (abortSignal?.aborted) throw error;
-    if (error instanceof WorkspaceAccessError) {
-      return {
-        ok: false as const,
-        error: { code: "workspace_access_denied", message: error.message },
-      };
-    }
-    throw error;
   }
 }
 
@@ -106,61 +88,7 @@ export async function createAgentSession({
   const changeSets = createChangeSetService(workspaceTools, workspace);
   let activeTurn = false;
 
-  const readOnlyTools = {
-    listFiles: tool({
-      description:
-        "List eligible UTF-8 text files in the Workspace, optionally below a relative directory.",
-      inputSchema: z.object({
-        path: z
-          .string()
-          .max(MAX_TOOL_PATH_LENGTH)
-          .optional()
-          .describe("Relative directory; defaults to ."),
-      }),
-      execute: (input, { abortSignal }) =>
-        runWorkspaceTool(
-          () => workspaceTools.listFiles(input, { signal: abortSignal }),
-          abortSignal,
-        ),
-    }),
-    readFile: tool({
-      description:
-        "Read one eligible UTF-8 text file from the Workspace, up to the visible file-size Safety Limit.",
-      inputSchema: z.object({
-        path: z
-          .string()
-          .max(MAX_TOOL_PATH_LENGTH)
-          .describe("Relative file path in the Workspace"),
-      }),
-      execute: (input, { abortSignal }) =>
-        runWorkspaceTool(
-          () => workspaceTools.readFile(input, { signal: abortSignal }),
-          abortSignal,
-        ),
-    }),
-    searchCode: tool({
-      description:
-        "Search eligible Workspace files for plain text and return bounded line matches.",
-      inputSchema: z.object({
-        query: z
-          .string()
-          .min(1)
-          .max(MAX_SEARCH_QUERY_LENGTH)
-          .describe("Plain text to find"),
-        path: z
-          .string()
-          .max(MAX_TOOL_PATH_LENGTH)
-          .optional()
-          .describe("Optional relative directory"),
-        caseSensitive: z.boolean().optional(),
-      }),
-      execute: (input, { abortSignal }) =>
-        runWorkspaceTool(
-          () => workspaceTools.searchCode(input, { signal: abortSignal }),
-          abortSignal,
-        ),
-    }),
-  };
+  const readOnlyTools = createReadOnlyAgentTools(workspaceTools);
 
   return {
     async startTurn(
@@ -249,6 +177,97 @@ export async function createAgentSession({
       } catch (error) {
         activeTurn = false;
         throw error;
+      }
+    },
+
+    async prepareWorkflowChangeSet(input: {
+      objective: string;
+      plan: string;
+      findings: string[];
+    }): Promise<PendingChangeSet> {
+      if (activeTurn) throw new ActiveAgentTurnError();
+      activeTurn = true;
+      let prepared: PendingChangeSet | undefined;
+      let validationError: string | undefined;
+      const observedFingerprints = new Map<string, string>();
+      try {
+        await generateText({
+          model,
+          instructions: [
+            "You are the implementation worker in Agent Lab.",
+            "Read every existing file you intend to modify or delete before proposing one complete Change Set.",
+            "Do not calculate or copy originalFingerprint values; the server binds proposals to the file versions returned by readFile.",
+            "The Change Set should satisfy the objective and include appropriate tests.",
+            "You cannot write files. proposeChangeSet only prepares a reviewable proposal; the user must approve it separately.",
+          ].join(" "),
+          prompt: [
+            `Objective: ${input.objective}`,
+            `Coordinator plan: ${input.plan}`,
+            ...input.findings.map((finding, index) =>
+              `Investigation ${index + 1}: ${finding}`,
+            ),
+          ].join("\n\n"),
+          tools: {
+            ...createReadOnlyAgentTools(workspaceTools, undefined, (file) => {
+              observedFingerprints.set(file.path, file.fingerprint);
+            }),
+            proposeChangeSet: tool({
+              description:
+                "Prepare one structured Change Set for human review. Read existing files first; omit originalFingerprint. This never writes files.",
+              inputSchema: jsonSchema(zodSchema(workflowChangeSetDraftSchema).jsonSchema),
+              execute: async (candidate) => {
+                try {
+                  const parsed = workflowChangeSetDraftSchema.safeParse(candidate);
+                  if (!parsed.success) {
+                    throw new ChangeSetValidationError(
+                      `Invalid Change Set structure: ${parsed.error.issues
+                        .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+                        .join("; ")}`,
+                    );
+                  }
+                  const operations = parsed.data.operations.map((operation) => {
+                    if (operation.kind === "create") return operation;
+                    const originalFingerprint = observedFingerprints.get(operation.path);
+                    if (!originalFingerprint) {
+                      throw new ChangeSetValidationError(
+                        `Read ${operation.path} before proposing a ${operation.kind} operation.`,
+                      );
+                    }
+                    const { originalFingerprint: _ignored, ...draft } = operation;
+                    return { ...draft, originalFingerprint };
+                  });
+                  prepared = await changeSets.prepare({
+                    summary: parsed.data.summary,
+                    operations,
+                  });
+                  return { ok: true, changeSet: prepared };
+                } catch (error) {
+                  if (error instanceof ChangeSetValidationError) {
+                    validationError = error.message;
+                    return {
+                      ok: false,
+                      error: { code: "invalid_change_set", message: error.message },
+                    };
+                  }
+                  throw error;
+                }
+              },
+            }),
+          },
+          stopWhen: [isStepCount(MAX_AGENT_STEPS), () => !!prepared],
+          maxOutputTokens: 8_000,
+          abortSignal: AbortSignal.timeout(180_000),
+        });
+        if (!prepared) {
+          throw new ChangeSetValidationError(
+            validationError
+              ? `Implementation worker did not prepare a valid Change Set: ${validationError}`
+              : "Implementation worker did not prepare a Change Set.",
+          );
+        }
+        return prepared;
+      } finally {
+        activeTurn = false;
       }
     },
 

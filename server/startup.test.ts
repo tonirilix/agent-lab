@@ -121,6 +121,13 @@ describe("Agent Lab startup", () => {
     ).toBe(403);
     expect((await request("http://127.0.0.1:8787")).status).toBe(503);
     expect((await request("http://localhost:8787")).status).toBe(503);
+    expect((await app.request("/api/investigations/missing")).status).toBe(404);
+    expect((await app.request("/api/investigations/missing", {
+      headers: { origin: "https://hostile.example" },
+    })).status).toBe(403);
+    expect((await app.request("/api/investigations/missing/retry", {
+      method: "POST",
+    })).status).toBe(403);
   });
 
   it("serves the production client and its assets from the local app", async () => {
