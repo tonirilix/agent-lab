@@ -6,6 +6,16 @@ The **Parallel investigation** panel starts two read-only workers for one object
 
 This is a learning project for one trusted user on their own machine, not a hosted IDE or a sandbox for untrusted repositories.
 
+## A look inside
+
+The transcript keeps the Coding Agent's read-only Tool Calls visible alongside its answer, so you can inspect what it actually used to reach a conclusion.
+
+![A completed Agent Lab inspection with visible listFiles and readFile Tool Calls](docs/screenshots/tool-trace.png)
+
+Open **Agent Configuration** to see the active model, effective instructions, available Tools, and Safety Limits for the current session.
+
+![The Agent Lab Agent Configuration sheet](docs/screenshots/agent-configuration.png)
+
 ## Requirements
 
 - Node.js 20 or newer
