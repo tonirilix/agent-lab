@@ -218,6 +218,7 @@ export function App() {
                 <ChatWorkspace
                   model={config.model}
                   contextWarningCharacters={config.agent.safetyLimits.contextWarningCharacters}
+                  paused={workflowStatus === "running"}
                 />
               </div>
               <div

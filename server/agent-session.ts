@@ -20,6 +20,7 @@ import {
 } from "./change-set.js";
 import { createWorkspaceTools } from "./workspace-tools.js";
 import { createReadOnlyAgentTools } from "./read-only-agent-tools.js";
+import type { AgentLifecycle } from "./agent-lifecycle.js";
 import type { WorkspaceRoot } from "./workspace-root.js";
 import {
   BASE_AGENT_INSTRUCTIONS,
@@ -79,10 +80,12 @@ export async function createAgentSession({
   model,
   modelName,
   workspace,
+  lifecycle,
 }: {
   model: LanguageModel;
   modelName?: string;
   workspace: WorkspaceRoot;
+  lifecycle?: Pick<AgentLifecycle, "beginChatTurn" | "registerChatChangeSet">;
 }) {
   const workspaceTools = await createWorkspaceTools(workspace);
   const changeSets = createChangeSetService(workspaceTools, workspace);
@@ -99,6 +102,7 @@ export async function createAgentSession({
       } = {},
     ) {
       if (activeTurn) throw new ActiveAgentTurnError();
+      const releaseChatTurn = lifecycle?.beginChatTurn();
       activeTurn = true;
       const startedAt = Date.now();
       let proposalCreatedThisTurn = false;
@@ -121,6 +125,7 @@ export async function createAgentSession({
             execute: async (proposal) => {
               try {
                 const changeSet = await changeSets.prepare(proposal);
+                lifecycle?.registerChatChangeSet(changeSet.id);
                 proposalCreatedThisTurn = true;
                 return { ok: true as const, changeSet };
               } catch (error) {
@@ -172,10 +177,12 @@ export async function createAgentSession({
           }),
           () => {
             activeTurn = false;
+            releaseChatTurn?.();
           },
         );
       } catch (error) {
         activeTurn = false;
+        releaseChatTurn?.();
         throw error;
       }
     },

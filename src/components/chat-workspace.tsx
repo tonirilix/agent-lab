@@ -36,10 +36,12 @@ function TurnNotice({
   children,
   destructive = false,
   onRetry,
+  retryDisabled = false,
 }: {
   children: ReactNode;
   destructive?: boolean;
   onRetry: () => void;
+  retryDisabled?: boolean;
 }) {
   return (
     <div
@@ -51,7 +53,7 @@ function TurnNotice({
       role={destructive ? "alert" : "status"}
     >
       <p>{children}</p>
-      <Button className="mt-3" variant="outline" size="sm" onClick={onRetry}>
+      <Button className="mt-3" variant="outline" size="sm" onClick={onRetry} disabled={retryDisabled}>
         <RotateCcw /> Retry
       </Button>
     </div>
@@ -66,9 +68,11 @@ function diagnosticsFromMetadata(metadata: unknown) {
 export function ChatWorkspace({
   model,
   contextWarningCharacters,
+  paused = false,
 }: {
   model: string;
   contextWarningCharacters: number;
+  paused?: boolean;
 }) {
   const transport = useMemo(
     () => new DefaultChatTransport({ api: "/api/chat" }),
@@ -94,7 +98,7 @@ export function ChatWorkspace({
   } = useTurnDiagnostics({ contextWarningCharacters, error, messages, model });
   function submit() {
     const text = input.trim();
-    if (!text || active) return;
+    if (text.length === 0 || active || paused) return;
     setInterrupted(false);
     beginTurn();
     setInput("");
@@ -102,6 +106,7 @@ export function ChatWorkspace({
   }
 
   function retry() {
+    if (paused) return;
     setInterrupted(false);
     beginTurn("regenerate");
     void regenerate();
@@ -220,14 +225,14 @@ export function ChatWorkspace({
               ) : null}
               {interrupted ? (
                 <MessageScrollerItem messageId="status-interrupted">
-                  <TurnNotice onRetry={retry}>
+                  <TurnNotice onRetry={retry} retryDisabled={paused}>
                     The turn was stopped. Any partial response is preserved.
                   </TurnNotice>
                 </MessageScrollerItem>
               ) : null}
               {error ? (
                 <MessageScrollerItem messageId="status-error">
-                  <TurnNotice destructive onRetry={retry}>
+                  <TurnNotice destructive onRetry={retry} retryDisabled={paused}>
                     <span className="inline-flex items-center gap-2">
                       <AlertCircle className="size-4" /> {error.message}
                     </span>
@@ -270,8 +275,8 @@ export function ChatWorkspace({
                 submit();
               }
             }}
-            disabled={active}
-            placeholder="Message Agent Lab…"
+            disabled={active || paused}
+            placeholder={paused ? "Chat pauses while Workflow runs…" : "Message Agent Lab…"}
             aria-label="Message Agent Lab"
             className="max-h-40 min-h-11 resize-none border-0 bg-transparent shadow-none focus-visible:ring-0"
           />
@@ -293,7 +298,7 @@ export function ChatWorkspace({
             <Button
               type="submit"
               size="icon"
-              disabled={!input.trim()}
+              disabled={input.trim().length === 0 || paused}
               aria-label="Send message"
             >
               <Send />
@@ -301,7 +306,7 @@ export function ChatWorkspace({
           )}
         </div>
         <p className="mx-auto mt-2 max-w-3xl text-center text-[11px] text-muted-foreground">
-          Enter to send · Shift+Enter for a new line
+          {paused ? "Chat is available when Workflow finishes." : "Enter to send · Shift+Enter for a new line"}
         </p>
         <p className="sr-only" aria-live="polite" aria-atomic="true">
           {status === "submitted"

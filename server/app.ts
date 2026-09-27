@@ -10,7 +10,15 @@ import {
   type AgentConfiguration,
 } from "./config.js";
 import { createConfiguredModel } from "./model.js";
-import { ActiveAgentTurnError, createAgentSession } from "./agent-session.js";
+import {
+  ActiveAgentTurnError,
+  createAgentSession,
+  type AgentSession,
+} from "./agent-session.js";
+import {
+  AgentLifecycleBusyError,
+  createAgentLifecycle,
+} from "./agent-lifecycle.js";
 import {
   ActiveInvestigationError,
   InvestigationRetryError,
@@ -29,16 +37,51 @@ type AppDependencies = {
   investigationStages?: InvestigationStages;
 };
 
+type ConfiguredAgent = Exclude<AgentConfiguration, { status: "invalid-workspace" }>;
+
+function createAgentRuntime(
+  model: LanguageModel,
+  config: ConfiguredAgent,
+  dependencies: AppDependencies,
+) {
+  let session: Promise<AgentSession> | null = null;
+  const getSession = () => {
+    if (session === null) throw new Error("Agent session is unavailable.");
+    return session;
+  };
+  const lifecycle = createAgentLifecycle({
+    approve: (id) => getSession().then((current) => current.approveChangeSet(id)),
+    reject: (id, feedback) =>
+      getSession().then((current) => current.rejectChangeSet(id, feedback)),
+  });
+  session = createAgentSession({
+    model,
+    modelName: config.model,
+    workspace: config.workspace,
+    lifecycle,
+  });
+  const investigations = createInvestigationService(
+    dependencies.investigationWorker ??
+      createModelInvestigationWorker(model, config.workspace),
+    dependencies.investigationStages ??
+      createModelInvestigationStages(model, config.workspace, (input) =>
+        getSession().then((current) => current.prepareWorkflowChangeSet(input)),
+      ),
+    lifecycle,
+  );
+  return { session, lifecycle, investigations };
+}
+
 function requireBrowserOrigin(
   allowedOrigins: readonly string[],
   allowMissingOriginOnGet = false,
 ): MiddlewareHandler {
   return async (context, next) => {
     const origin = context.req.header("origin");
-    if (
-      !(allowMissingOriginOnGet && context.req.method === "GET" && !origin) &&
-      !allowedOrigins.includes(origin ?? "")
-    ) {
+    const originlessGetAllowed =
+      allowMissingOriginOnGet && context.req.method === "GET" && origin === undefined;
+    const trustedOrigin = allowedOrigins.includes(origin ?? "");
+    if (originlessGetAllowed === false && trustedOrigin === false) {
       return context.json({ error: "Browser origin is not allowed." }, 403);
     }
     await next();
@@ -51,27 +94,11 @@ export function createApp(
 ) {
   const app = new Hono();
   const model = dependencies.model ?? createConfiguredModel(config);
-  const agentSession =
-    model && config.status !== "invalid-workspace"
-      ? createAgentSession({
-          model,
-          modelName: config.model,
-          workspace: config.workspace,
-        })
-      : null;
-  const investigations =
-    model && config.status !== "invalid-workspace"
-      ? createInvestigationService(
-          dependencies.investigationWorker ??
-            createModelInvestigationWorker(model, config.workspace),
-          dependencies.investigationStages ??
-            createModelInvestigationStages(model, config.workspace, (input) =>
-              agentSession!.then((session) =>
-                session.prepareWorkflowChangeSet(input),
-              ),
-            ),
-        )
-      : null;
+  const runtime =
+    config.status === "invalid-workspace" || model === null
+      ? null
+      : createAgentRuntime(model, config, dependencies);
+  const investigations = runtime?.investigations ?? null;
 
   if (dependencies.allowedOrigins?.length) {
     const browserOriginGuard = requireBrowserOrigin(dependencies.allowedOrigins);
@@ -86,7 +113,7 @@ export function createApp(
   );
 
   app.post("/api/investigations", async (context) => {
-    if (!investigations) {
+    if (investigations === null) {
       return context.json({ error: "Investigation is unavailable." }, 503);
     }
     let body: unknown;
@@ -99,18 +126,15 @@ export function createApp(
       body && typeof body === "object" && "objective" in body
         ? body.objective
         : undefined;
-    if (
-      typeof objective !== "string" ||
-      !objective.trim() ||
-      objective.trim().length > 2_000
-    ) {
+    const normalizedObjective = typeof objective === "string" ? objective.trim() : "";
+    if (normalizedObjective.length === 0 || normalizedObjective.length > 2_000) {
       return context.json(
         { error: "objective must be 1 to 2000 characters." },
         400,
       );
     }
     try {
-      return context.json(investigations.start(objective.trim()), 201);
+      return context.json(investigations.start(normalizedObjective), 201);
     } catch (error) {
       if (error instanceof ActiveInvestigationError) {
         return context.json({ error: error.message }, 409);
@@ -127,7 +151,7 @@ export function createApp(
   });
 
   app.post("/api/investigations/:id/retry", (context) => {
-    if (!investigations) return context.json({ error: "Investigation is unavailable." }, 503);
+    if (investigations === null) return context.json({ error: "Investigation is unavailable." }, 503);
     try {
       return context.json(investigations.retry(context.req.param("id")));
     } catch (error) {
@@ -140,7 +164,7 @@ export function createApp(
   });
 
   app.post("/api/chat", async (context) => {
-    if (!model) {
+    if (runtime === null) {
       return context.json(
         {
           error:
@@ -161,13 +185,13 @@ export function createApp(
     } catch {
       return context.json({ error: "Request body must be valid JSON." }, 400);
     }
-    if (!Array.isArray(body.messages)) {
+    if (Array.isArray(body.messages) === false) {
       return context.json({ error: "messages must be an array" }, 400);
     }
 
     try {
       return createUIMessageStreamResponse({
-        stream: await (await agentSession!).startTurn(
+        stream: await (await runtime.session).startTurn(
           body.messages,
           context.req.raw.signal,
           {
@@ -176,7 +200,7 @@ export function createApp(
         ),
       });
     } catch (error) {
-      if (error instanceof ActiveAgentTurnError) {
+      if (error instanceof ActiveAgentTurnError || error instanceof AgentLifecycleBusyError) {
         return context.json({ error: error.message }, 409);
       }
       throw error;
@@ -184,7 +208,7 @@ export function createApp(
   });
 
   app.post("/api/change-sets/:id/reject", async (context) => {
-    if (!agentSession) {
+    if (runtime === null) {
       return context.json({ error: "Agent session is unavailable." }, 503);
     }
     let body: { feedback?: unknown };
@@ -193,15 +217,16 @@ export function createApp(
     } catch {
       return context.json({ error: "Request body must be valid JSON." }, 400);
     }
-    if (body.feedback !== undefined && typeof body.feedback !== "string") {
+    const validFeedback = body.feedback === undefined || typeof body.feedback === "string";
+    if (validFeedback === false) {
       return context.json({ error: "feedback must be a string" }, 400);
     }
+    const feedback = typeof body.feedback === "string" ? body.feedback : undefined;
     try {
-      const result = await (await agentSession).rejectChangeSet(
+      const result = await runtime.lifecycle.reject(
         context.req.param("id"),
-        body.feedback,
+        feedback,
       );
-      investigations?.markChangeSetDecision(result.id, "rejected");
       return context.json(result);
     } catch (error) {
       if (error instanceof Error) {
@@ -212,17 +237,13 @@ export function createApp(
   });
 
   app.post("/api/change-sets/:id/approve", async (context) => {
-    if (!agentSession) {
+    if (runtime === null) {
       return context.json({ error: "Agent session is unavailable." }, 503);
     }
-    if (investigations && !investigations.canApproveChangeSet(context.req.param("id"))) {
-      return context.json({ error: "Workflow verification and review must complete before approval." }, 409);
-    }
     try {
-      const result = await (await agentSession).approveChangeSet(
+      const result = await runtime.lifecycle.approve(
         context.req.param("id"),
       );
-      investigations?.markChangeSetDecision(result.id, "approved");
       return context.json(result);
     } catch (error) {
       if (error instanceof Error) {

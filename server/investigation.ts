@@ -10,6 +10,10 @@ import type { WorkspaceRoot } from "./workspace-root.js";
 import { createWorkspaceTools } from "./workspace-tools.js";
 import { createReadOnlyAgentTools } from "./read-only-agent-tools.js";
 import { verifyWorkflowChangeSet } from "./workflow-verification.js";
+import {
+  AgentLifecycleBusyError,
+  type AgentLifecycle,
+} from "./agent-lifecycle.js";
 
 const BRIEFS = [
   {
@@ -168,6 +172,10 @@ export function createModelInvestigationStages(
 export function createInvestigationService(
   runWorker: InvestigationWorkerRunner,
   stages?: InvestigationStages,
+  lifecycle?: Pick<
+    AgentLifecycle,
+    "beginWorkflow" | "registerWorkflowChangeSet" | "markWorkflowReady"
+  >,
 ) {
   const runs = new Map<string, InvestigationRun>();
   let activeId: string | null = null;
@@ -193,7 +201,7 @@ export function createInvestigationService(
     }
   }
 
-  async function advance(run: InvestigationRun) {
+  async function advance(run: InvestigationRun, releaseWorkflow?: () => void) {
     try {
       if (run.stages) {
         await executeStage(run.stages.assignment, async () => {
@@ -231,30 +239,48 @@ export function createInvestigationService(
         return;
       }
 
-      const findings = run.workers.map((worker) => worker.report!);
+      const findings = run.workers.map((worker) => {
+        if (worker.report === undefined) {
+          throw new Error(`${worker.title} finished without a report.`);
+        }
+        return worker.report;
+      });
       const { coordinator, implementer, verification, reviewer } = run.stages;
       await executeStage(coordinator, () => stages.plan(run.objective, findings));
+      const plan = coordinator.report;
+      if (plan === undefined) throw new Error("Coordinator finished without a plan.");
       await executeStage(implementer, async () => {
         run.changeSet = await stages.implement({
           objective: run.objective,
-          plan: coordinator.report!,
+          plan,
           findings,
+        });
+        lifecycle?.registerWorkflowChangeSet(run.changeSet.id, (decision) => {
+          run.status = decision === "approved" ? "completed" : "rejected";
+          run.finishedAt = new Date().toISOString();
         });
         return `Prepared Change Set ${run.changeSet.id}.`;
       });
+      const changeSet = run.changeSet;
+      if (changeSet === undefined) throw new Error("Implementer finished without a Change Set.");
       await executeStage(verification, () =>
         stages.verify
-          ? stages.verify(run.changeSet!)
+          ? stages.verify(changeSet)
           : Promise.resolve("Automated verification is not configured."),
       );
+      const verificationReport = verification.report;
+      if (verificationReport === undefined) {
+        throw new Error("Verification finished without a report.");
+      }
       await executeStage(reviewer, () => stages.review({
         objective: run.objective,
-        plan: coordinator.report!,
+        plan,
         findings,
-        changeSet: run.changeSet!,
-        verification: verification.report!,
+        changeSet,
+        verification: verificationReport,
       }));
       run.status = "awaiting_approval";
+      lifecycle?.markWorkflowReady(changeSet.id);
     } catch {
       run.status = run.changeSet ? "needs_attention" : "failed";
     } finally {
@@ -263,15 +289,25 @@ export function createInvestigationService(
         run.finishedAt = run.automationFinishedAt;
       }
       activeId = null;
+      releaseWorkflow?.();
     }
   }
 
   function launch(run: InvestigationRun) {
+    let releaseWorkflow: (() => void) | undefined;
+    try {
+      releaseWorkflow = lifecycle?.beginWorkflow();
+    } catch (error) {
+      if (error instanceof AgentLifecycleBusyError) {
+        throw new ActiveInvestigationError(error.message);
+      }
+      throw error;
+    }
     run.status = "running";
     run.automationFinishedAt = undefined;
     run.finishedAt = undefined;
     activeId = run.id;
-    void advance(run);
+    void advance(run, releaseWorkflow);
     return snapshot(run);
   }
 
@@ -313,12 +349,17 @@ export function createInvestigationService(
           : {}),
       };
       runs.set(run.id, run);
-      while (runs.size > 10) {
-        const oldest = runs.keys().next().value;
-        if (oldest) runs.delete(oldest);
+      try {
+        const started = launch(run);
+        while (runs.size > 10) {
+          const oldest = runs.keys().next().value;
+          if (oldest) runs.delete(oldest);
+        }
+        return started;
+      } catch (error) {
+        runs.delete(run.id);
+        throw error;
       }
-
-      return launch(run);
     },
 
     retry(id: string) {
@@ -337,21 +378,6 @@ export function createInvestigationService(
     get(id: string) {
       const run = runs.get(id);
       return run ? snapshot(run) : null;
-    },
-
-    canApproveChangeSet(changeSetId: string) {
-      const run = [...runs.values()].find((item) => item.changeSet?.id === changeSetId);
-      return !run || run.status === "awaiting_approval";
-    },
-
-    markChangeSetDecision(changeSetId: string, decision: "approved" | "rejected") {
-      const run = [...runs.values()].find(
-        (item) => item.changeSet?.id === changeSetId,
-      );
-      if (run) {
-        run.status = decision === "approved" ? "completed" : "rejected";
-        run.finishedAt = new Date().toISOString();
-      }
     },
   };
 }

@@ -7,6 +7,7 @@ import { MockLanguageModelV4 } from "ai/test";
 import type { InvestigationRun } from "../shared/investigation.js";
 import type { PendingChangeSet } from "../shared/change-set-contracts.js";
 import { createApp } from "./app.js";
+import { createAgentLifecycle } from "./agent-lifecycle.js";
 import { resolveAgentConfiguration } from "./config.js";
 import {
   createInvestigationService,
@@ -26,6 +27,13 @@ const preparedChangeSet: PendingChangeSet = {
   files: [{ kind: "create", path: "src/priority.ts", diff: "+export {};" }],
   warnings: [],
 };
+
+function createTestLifecycle() {
+  return createAgentLifecycle({
+    approve: async () => { throw new Error("Approval is not needed in this test."); },
+    reject: async (id, feedback) => ({ id, status: "rejected" as const, feedback }),
+  });
+}
 
 afterEach(async () => {
   await Promise.all(
@@ -100,7 +108,8 @@ describe("parallel investigation", () => {
       await resolveWorkspaceRoot(workspace),
       async () => preparedChangeSet,
     );
-    expect(await stages.assign!("Add task priority")).toEqual({
+    if (stages.assign === undefined) throw new Error("Assignment stage is missing.");
+    expect(await stages.assign("Add task priority")).toEqual({
       code: "Trace the task model and summary implementation.",
       tests: "Find current tests and priority edge cases.",
     });
@@ -175,6 +184,7 @@ describe("parallel investigation", () => {
 
   it("waits for both findings, then plans, prepares, reviews, and waits for a decision", async () => {
     const order: string[] = [];
+    const lifecycle = createTestLifecycle();
     const service = createInvestigationService(
       async (worker) => {
         order.push(worker.id);
@@ -202,6 +212,7 @@ describe("parallel investigation", () => {
           return "Ready for human review";
         },
       },
+      lifecycle,
     );
     const run = service.start("Add task priority");
     await vi.waitFor(() =>
@@ -221,7 +232,7 @@ describe("parallel investigation", () => {
     expect(() => service.start("Another feature")).toThrow(
       "Decide the pending Change Set before starting another workflow.",
     );
-    service.markChangeSetDecision("prepared-1", "rejected");
+    await lifecycle.reject("prepared-1");
     expect(service.get(run.id)?.status).toBe("rejected");
     expect(service.start("Another feature").status).toBe("running");
   });
@@ -229,6 +240,7 @@ describe("parallel investigation", () => {
   it("keeps a prepared proposal available when review fails and allows retry after rejection", async () => {
     let reviews = 0;
     let implementations = 0;
+    const lifecycle = createTestLifecycle();
     const service = createInvestigationService(
       async (worker) => `${worker.id} findings`,
       {
@@ -240,6 +252,7 @@ describe("parallel investigation", () => {
           return "Ready";
         },
       },
+      lifecycle,
     );
     const run = service.start("Add priority");
     await vi.waitFor(() =>
@@ -253,7 +266,7 @@ describe("parallel investigation", () => {
     service.retry(run.id);
     await vi.waitFor(() => expect(service.get(run.id)?.status).toBe("awaiting_approval"));
     expect({ reviews, implementations }).toEqual({ reviews: 2, implementations: 1 });
-    service.markChangeSetDecision(preparedChangeSet.id, "rejected");
+    await lifecycle.reject(preparedChangeSet.id);
     expect(service.start("Retry").status).toBe("running");
   });
 
@@ -353,6 +366,44 @@ describe("parallel investigation", () => {
       { id: "code", report: "Code path findings" },
       { id: "tests", report: "Tests and risks findings" },
     ]);
+  });
+
+  it("pauses Chat while Workflow automation is active", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agent-lab-investigation-"));
+    temporaryWorkspaces.push(workspace);
+    const config = await resolveAgentConfiguration({ workspace, openAiApiKey: "test-key" });
+    const releaseWorkers: Array<(report: string) => void> = [];
+    const app = createApp(config, {
+      investigationWorker: () => new Promise((resolve) => releaseWorkers.push(resolve)),
+      investigationStages: {
+        plan: async () => "Plan",
+        implement: async () => preparedChangeSet,
+        review: async () => "Reviewed",
+      },
+    });
+
+    const response = await app.request("/api/investigations", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ objective: "Add priority" }),
+    });
+    expect(response.status).toBe(201);
+    await vi.waitFor(() => expect(releaseWorkers).toHaveLength(2));
+
+    const chat = await app.request("/api/chat", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [] }),
+    });
+    expect(chat.status).toBe(409);
+    expect(await chat.json()).toEqual({ error: "Another Agent Turn or workflow is active." });
+
+    releaseWorkers.forEach((release) => release("Findings"));
+    const run = (await response.json()) as InvestigationRun;
+    await vi.waitFor(async () => {
+      const progress = await app.request(`/api/investigations/${run.id}`);
+      expect(((await progress.json()) as InvestigationRun).status).toBe("awaiting_approval");
+    });
   });
 
   it("exposes targeted retry and blocks approval while verification has failed", async () => {
