@@ -30,12 +30,12 @@ export function MessageMarkdown({ children }: { children: string }) {
           </a>
         ),
         pre: ({ children: codeChildren }) => (
-          <div className="group/code relative my-3 overflow-hidden rounded-xl border border-border bg-code">
+          <div className="group/code relative my-3 overflow-hidden rounded-xl border border-border bg-code text-slate-100">
             <Button
               type="button"
               variant="ghost"
               size="icon-sm"
-              className="absolute right-2 top-2 z-10 opacity-0 transition-opacity group-hover/code:opacity-100 focus-visible:opacity-100"
+              className="absolute right-2 top-2 z-10 text-slate-100 opacity-0 transition-opacity hover:bg-white/10 hover:text-white group-hover/code:opacity-100 focus-visible:opacity-100"
               aria-label="Copy code"
               onClick={() =>
                 void navigator.clipboard.writeText(textFromNode(codeChildren))

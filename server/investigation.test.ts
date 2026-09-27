@@ -379,6 +379,22 @@ describe("parallel investigation", () => {
     await expect(readFile(join(example, "tests/failure.test.ts"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("uses Approval's parent-directory rule during disposable verification", async () => {
+    const example = join(dirname(fileURLToPath(import.meta.url)), "../examples/task-list");
+    const workspace = await resolveWorkspaceRoot(example);
+    const proposal: PendingChangeSet = {
+      ...preparedChangeSet,
+      operations: [{
+        kind: "create",
+        path: "missing/priority.ts",
+        content: "export const priority = 'high';\n",
+      }],
+    };
+
+    await expect(verifyWorkflowChangeSet(workspace, proposal))
+      .rejects.toThrow("Parent directory does not exist");
+  });
+
   it("stops before spawning workers when task assignment fails", async () => {
     const worker = vi.fn(async () => "Unexpected findings");
     const service = createInvestigationService(worker, {

@@ -32,14 +32,14 @@ function OperationIcon({ kind }: { kind: "create" | "modify" | "delete" }) {
 
 function DiffBlock({ diff }: { diff: string }) {
   return (
-    <pre className="overflow-x-auto rounded-xl border border-border bg-code p-3 font-mono text-[11px] leading-5">
+    <pre className="overflow-x-auto rounded-xl border border-border bg-code p-3 font-mono text-[11px] leading-5 text-slate-100">
       {diff.split("\n").map((line, index) => (
         <span
           className={
             line.startsWith("+") && !line.startsWith("+++")
-              ? "block bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
+              ? "block bg-emerald-500/10 text-emerald-300"
               : line.startsWith("-") && !line.startsWith("---")
-                ? "block bg-destructive/10 text-destructive"
+                ? "block bg-rose-500/10 text-rose-300"
                 : "block"
           }
           key={index}
@@ -201,7 +201,7 @@ export function ChangeSetCard({
             <summary className="cursor-pointer px-3 py-2 text-xs font-medium">
               Advanced · exact Tool arguments
             </summary>
-            <pre className="max-h-96 overflow-auto border-t border-border bg-code p-3 text-[11px]">
+            <pre className="max-h-96 overflow-auto border-t border-border bg-code p-3 text-[11px] text-slate-100">
               {JSON.stringify(toolInput, null, 2)}
             </pre>
           </details>
@@ -209,7 +209,7 @@ export function ChangeSetCard({
             <summary className="cursor-pointer px-3 py-2 text-xs font-medium">
               Advanced · exact Tool result
             </summary>
-            <pre className="max-h-96 overflow-auto border-t border-border bg-code p-3 text-[11px]">
+            <pre className="max-h-96 overflow-auto border-t border-border bg-code p-3 text-[11px] text-slate-100">
               {JSON.stringify(toolOutput, null, 2)}
             </pre>
           </details>

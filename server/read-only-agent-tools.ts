@@ -52,7 +52,7 @@ export function createReadOnlyAgentTools(
     }),
     readFile: tool({
       description:
-        "Read one eligible UTF-8 text file from the Workspace, up to the visible file-size Safety Limit.",
+        "Read one eligible UTF-8 text file from the Workspace, up to the visible file-size Safety Limit. Use the exact source path from listFiles; a TypeScript import ending in .js may refer to a .ts file on disk.",
       inputSchema: z.object({
         path: z
           .string()

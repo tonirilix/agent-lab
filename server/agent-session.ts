@@ -204,6 +204,7 @@ export async function createAgentSession({
           instructions: [
             "You are the implementation worker in Agent Lab.",
             "Read every existing file you intend to modify or delete before proposing one complete Change Set.",
+            "Use the exact source paths returned by listFiles when reading files. TypeScript imports may end in .js even when the source file ends in .ts.",
             "Do not calculate or copy originalFingerprint values; the server binds proposals to the file versions returned by readFile.",
             "The Change Set should satisfy the objective and include appropriate tests.",
             "You cannot write files. proposeChangeSet only prepares a reviewable proposal; the user must approve it separately.",

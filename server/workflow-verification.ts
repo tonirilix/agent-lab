@@ -1,11 +1,13 @@
 import { execFile } from "node:child_process";
-import { createHash } from "node:crypto";
-import { cp, lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { cp, lstat, mkdtemp, rm, symlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { PendingChangeSet } from "../shared/change-set-contracts.js";
-import type { WorkspaceRoot } from "./workspace-root.js";
+import { resolveWorkspaceRoot, type WorkspaceRoot } from "./workspace-root.js";
 import { MAX_FILE_BYTES } from "../shared/agent-policy.js";
+import { createWorkspaceTools } from "./workspace-tools.js";
+import { createWorkspaceTransaction } from "./workspace-transaction.js";
 
 const projectRoot = fileURLToPath(new URL("../", import.meta.url));
 const exampleWorkspace = resolve(projectRoot, "examples/task-list");
@@ -13,44 +15,6 @@ const vitestCli = resolve(projectRoot, "node_modules/vitest/vitest.mjs");
 
 function plainOutput(output: string) {
   return output.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
-}
-
-function inside(root: string, path: string) {
-  const displacement = relative(root, path);
-  return displacement !== "" && displacement !== ".." &&
-    !displacement.startsWith(`..${sep}`) && !isAbsolute(displacement);
-}
-
-function fingerprint(content: Buffer) {
-  return createHash("sha256").update(content).digest("hex");
-}
-
-async function applyProposal(root: string, changeSet: PendingChangeSet) {
-  for (const operation of changeSet.operations) {
-    const target = resolve(root, operation.path);
-    if (!inside(root, target) || operation.path.split(/[\\/]/).includes("..")) {
-      throw new Error(`Verification rejected an unsafe path: ${operation.path}`);
-    }
-    let existing: Buffer | undefined;
-    try {
-      const metadata = await lstat(target);
-      if (!metadata.isFile()) throw new Error(`Verification cannot change a non-file: ${operation.path}`);
-      existing = await readFile(target);
-    } catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
-    }
-    if (operation.kind === "create") {
-      if (existing) throw new Error(`Verification found an existing file: ${operation.path}`);
-      await mkdir(dirname(target), { recursive: true });
-      await writeFile(target, operation.content);
-    } else {
-      if (!existing || fingerprint(existing) !== operation.originalFingerprint) {
-        throw new Error(`Verification found a stale file: ${operation.path}`);
-      }
-      if (operation.kind === "delete") await rm(target);
-      else await writeFile(target, operation.content);
-    }
-  }
 }
 
 /** Runs the bundled example's tests against the proposal, never the live Workspace. */
@@ -61,7 +25,7 @@ export async function verifyWorkflowChangeSet(
   if (workspace.canonicalPath !== exampleWorkspace) {
     return "Automated verification is available for the bundled task-list Workspace only. Inspect and run this Workspace's tests manually before approval.";
   }
-  const disposable = await mkdtemp(join(projectRoot, ".agent-lab-verify-"));
+  const disposable = await mkdtemp(join(tmpdir(), "agent-lab-verify-"));
   try {
     await cp(exampleWorkspace, disposable, {
       recursive: true,
@@ -73,7 +37,11 @@ export async function verifyWorkflowChangeSet(
         return metadata.isDirectory() || (metadata.isFile() && metadata.size <= MAX_FILE_BYTES);
       },
     });
-    await applyProposal(disposable, changeSet);
+    await symlink(resolve(projectRoot, "node_modules"), resolve(disposable, "node_modules"), "dir");
+    const disposableWorkspace = await resolveWorkspaceRoot(disposable);
+    const workspaceTools = await createWorkspaceTools(disposableWorkspace);
+    await createWorkspaceTransaction(workspaceTools, disposableWorkspace)
+      .apply(changeSet.id, changeSet.operations);
     const output = await new Promise<{ stdout: string; stderr: string }>((resolveOutput, reject) => {
       execFile(process.execPath, [vitestCli, "run", "--root", disposable], {
         cwd: disposable,
