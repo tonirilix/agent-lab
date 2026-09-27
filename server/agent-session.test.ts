@@ -248,6 +248,52 @@ afterEach(async () => {
 });
 
 describe("Agent session", () => {
+  it("prepares a workflow Change Set without writing until explicit Approval", async () => {
+    const workspace = await workspaceWithSource();
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => ({
+        content: [
+          {
+            type: "tool-call",
+            toolCallId: "workflow-proposal",
+            toolName: "proposeChangeSet",
+            input: JSON.stringify({
+              summary: "Add a priority helper",
+              operations: [
+                {
+                  kind: "create",
+                  path: "src/priority.ts",
+                  content: "export const priority = 'high';\n",
+                },
+              ],
+            }),
+          },
+        ],
+        finishReason: { unified: "tool-calls", raw: undefined },
+        warnings: [],
+        usage,
+      }),
+    });
+    const session = await createAgentSession({
+      model,
+      workspace: await resolveWorkspaceRoot(workspace),
+    });
+    const proposal = await session.prepareWorkflowChangeSet({
+      objective: "Add priority",
+      plan: "Create a priority helper",
+      findings: ["src/tasks.ts holds tasks", "Test priority behavior"],
+    });
+
+    expect(proposal.status).toBe("pending");
+    expect(session.getPendingChangeSet()?.id).toBe(proposal.id);
+    await expect(readFile(join(workspace, "src", "priority.ts"))).rejects.toThrow();
+    const applied = await session.approveChangeSet(proposal.id);
+    expect(applied.status).toBe("verified");
+    expect(await readFile(join(workspace, "src", "priority.ts"), "utf8")).toBe(
+      "export const priority = 'high';\n",
+    );
+  });
+
   it("publishes completed Agent Turn diagnostics with aggregated usage", async () => {
     const workspace = await workspaceWithSource();
 

@@ -14,7 +14,9 @@ import { ActiveAgentTurnError, createAgentSession } from "./agent-session.js";
 import {
   ActiveInvestigationError,
   createInvestigationService,
+  createModelInvestigationStages,
   createModelInvestigationWorker,
+  type InvestigationStages,
   type InvestigationWorkerRunner,
 } from "./investigation.js";
 
@@ -23,6 +25,7 @@ type AppDependencies = {
   allowedOrigins?: readonly string[];
   clientRoot?: string;
   investigationWorker?: InvestigationWorkerRunner;
+  investigationStages?: InvestigationStages;
 };
 
 function requireBrowserOrigin(
@@ -55,6 +58,12 @@ export function createApp(
       ? createInvestigationService(
           dependencies.investigationWorker ??
             createModelInvestigationWorker(model, config.workspace),
+          dependencies.investigationStages ??
+            createModelInvestigationStages(model, config.workspace, (input) =>
+              agentSession!.then((session) =>
+                session.prepareWorkflowChangeSet(input),
+              ),
+            ),
         )
       : null;
 
@@ -168,12 +177,12 @@ export function createApp(
       return context.json({ error: "feedback must be a string" }, 400);
     }
     try {
-      return context.json(
-        await (await agentSession).rejectChangeSet(
-          context.req.param("id"),
-          body.feedback,
-        ),
+      const result = await (await agentSession).rejectChangeSet(
+        context.req.param("id"),
+        body.feedback,
       );
+      investigations?.markChangeSetDecision(result.id, "rejected");
+      return context.json(result);
     } catch (error) {
       if (error instanceof Error) {
         return context.json({ error: error.message }, 409);
@@ -187,9 +196,11 @@ export function createApp(
       return context.json({ error: "Agent session is unavailable." }, 503);
     }
     try {
-      return context.json(
-        await (await agentSession).approveChangeSet(context.req.param("id")),
+      const result = await (await agentSession).approveChangeSet(
+        context.req.param("id"),
       );
+      investigations?.markChangeSetDecision(result.id, "approved");
+      return context.json(result);
     } catch (error) {
       if (error instanceof Error) {
         return context.json({ error: error.message }, 409);

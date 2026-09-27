@@ -2,7 +2,7 @@
 
 Agent Lab is a small, real local Coding Agent built to make the agent loop understandable. A React chat streams responses from an OpenAI model through a local Node server. The model can inspect one explicitly selected Workspace with bounded read-only Tools, but it cannot write during ordinary conversation. A file change requires a structured Change Set, review, and explicit Approval of that exact revision.
 
-The **Parallel investigation** panel starts two read-only workers for one objective. One traces the code path; the other finds tests and risks. They run concurrently, and the panel shows each worker's status, Workspace tools used, report, or error. This is the first orchestration exercise: it does not create Change Sets or apply files.
+The **Agent workflow** panel asks a coordinator to assign two distinct read-only investigations for one objective. One worker traces the code path; the other finds tests and risks. They run concurrently. After both report, the coordinator writes an implementation plan, an implementer prepares one Change Set, and an independent reviewer assesses its diff. The panel shows each stage's status, findings, or error. The user still decides whether to approve the exact Change Set; the workflow never applies files on its own.
 
 This is a learning project for one trusted user on their own machine, not a hosted IDE or a sandbox for untrusted repositories.
 
@@ -106,7 +106,7 @@ Tool-read source stays local until a Tool reads it; that bounded Tool result is 
 
 Use the bundled `examples/task-list` Workspace so every Change Set is disposable.
 
-For the parallel exercise, open **Parallel investigation** and run its prefilled task-priority objective. Watch both workers enter the running state, inspect their separate reports, then use the normal chat and Change Set flow for implementation. Investigations are held in server memory for this local session; the ten most recent runs are retained until restart. Only one investigation runs at a time, while its two workers run concurrently.
+For the orchestration exercise, open **Agent workflow** and run its prefilled task-priority objective. Watch both investigators run in parallel, followed by the coordinator, implementer, and reviewer. Inspect the proposed diff and review report before approving or rejecting. The reviewer inspects source and the diff; it does not run tests. Workflow records are held in server memory for this local session; the ten most recent runs are retained until restart. Only one workflow runs at a time, and a pending Change Set must be decided before another starts.
 
 1. Start Agent Lab with the development command above and confirm the header shows `task-list`, OpenAI, and your configured model.
 2. Open **Agent Configuration**. Inspect the effective instruction policy, four Tool capabilities, Safety Limits, and telemetry status.

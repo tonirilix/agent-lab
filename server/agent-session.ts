@@ -1,5 +1,6 @@
 import {
   convertToModelMessages,
+  generateText,
   isStepCount,
   jsonSchema,
   streamText,
@@ -8,7 +9,10 @@ import {
   type UIMessage,
   zodSchema,
 } from "ai";
-import { changeSetProposalSchema } from "../shared/change-set-contracts.js";
+import {
+  changeSetProposalSchema,
+  type PendingChangeSet,
+} from "../shared/change-set-contracts.js";
 import {
   ChangeSetValidationError,
   createChangeSetService,
@@ -172,6 +176,71 @@ export async function createAgentSession({
       } catch (error) {
         activeTurn = false;
         throw error;
+      }
+    },
+
+    async prepareWorkflowChangeSet(input: {
+      objective: string;
+      plan: string;
+      findings: string[];
+    }): Promise<PendingChangeSet> {
+      if (activeTurn) throw new ActiveAgentTurnError();
+      activeTurn = true;
+      let prepared: PendingChangeSet | undefined;
+      let validationError: string | undefined;
+      try {
+        await generateText({
+          model,
+          instructions: [
+            "You are the implementation worker in Agent Lab.",
+            "Use read-only Workspace tools to inspect files and fingerprints before proposing one complete Change Set.",
+            "The Change Set should satisfy the objective and include appropriate tests.",
+            "You cannot write files. proposeChangeSet only prepares a reviewable proposal; the user must approve it separately.",
+          ].join(" "),
+          prompt: [
+            `Objective: ${input.objective}`,
+            `Coordinator plan: ${input.plan}`,
+            ...input.findings.map((finding, index) =>
+              `Investigation ${index + 1}: ${finding}`,
+            ),
+          ].join("\n\n"),
+          tools: {
+            ...readOnlyTools,
+            proposeChangeSet: tool({
+              description:
+                "Prepare one structured Change Set for human review. This never writes files.",
+              inputSchema: jsonSchema(zodSchema(changeSetProposalSchema).jsonSchema),
+              execute: async (candidate) => {
+                try {
+                  prepared = await changeSets.prepare(candidate);
+                  return { ok: true, changeSet: prepared };
+                } catch (error) {
+                  if (error instanceof ChangeSetValidationError) {
+                    validationError = error.message;
+                    return {
+                      ok: false,
+                      error: { code: "invalid_change_set", message: error.message },
+                    };
+                  }
+                  throw error;
+                }
+              },
+            }),
+          },
+          stopWhen: [isStepCount(MAX_AGENT_STEPS), () => !!prepared],
+          maxOutputTokens: 8_000,
+          abortSignal: AbortSignal.timeout(180_000),
+        });
+        if (!prepared) {
+          throw new ChangeSetValidationError(
+            validationError
+              ? `Implementation worker did not prepare a valid Change Set: ${validationError}`
+              : "Implementation worker did not prepare a Change Set.",
+          );
+        }
+        return prepared;
+      } finally {
+        activeTurn = false;
       }
     },
 
