@@ -157,7 +157,6 @@ async function prepareSessionChangeSet(
         },
       ],
       undefined,
-      { proposalRequested: true },
     ),
   );
   return session;
@@ -734,7 +733,6 @@ describe("Agent session", () => {
           },
         ],
         undefined,
-        { proposalRequested: true },
       ),
     );
     const pending = session.getPendingChangeSet()!;
@@ -881,18 +879,10 @@ describe("Agent session", () => {
       },
     ];
 
-    await collectStream(
-      await session.startTurn(proposalMessage, undefined, {
-        proposalRequested: true,
-      }),
-    );
+    await collectStream(await session.startTurn(proposalMessage));
     const first = session.getPendingChangeSet()!;
     await session.rejectChangeSet(first.id, "Revise it.");
-    await collectStream(
-      await session.startTurn(proposalMessage, undefined, {
-        proposalRequested: true,
-      }),
-    );
+    await collectStream(await session.startTurn(proposalMessage));
     const revised = session.getPendingChangeSet()!;
 
     expect(revised.id).not.toBe(first.id);
@@ -975,7 +965,7 @@ describe("Agent session", () => {
     const trace = JSON.stringify(chunks);
 
     expect(model.doStreamCalls).toHaveLength(2);
-    expect(JSON.stringify(model.doStreamCalls[0]?.tools)).not.toContain(
+    expect(JSON.stringify(model.doStreamCalls[0]?.tools)).toContain(
       "proposeChangeSet",
     );
     expect(trace).toContain('"toolName":"readFile"');
@@ -1140,7 +1130,7 @@ describe("Agent session", () => {
     expect(model.doStreamCalls.length).toBeLessThanOrEqual(2);
   });
 
-  it("prepares and rejects a Change Set only in an explicit Proposal Request", async () => {
+  it("prepares and rejects a Change Set after the user agrees in chat", async () => {
     const workspace = await workspaceWithSource();
     const original = "export const tasks = ['learn'];\n";
     let modelCall = 0;
@@ -1218,7 +1208,7 @@ describe("Agent session", () => {
       ]),
     );
     expect(JSON.stringify(discussion)).toContain("without writing yet");
-    expect(JSON.stringify(model.doStreamCalls[0]?.tools)).not.toContain(
+    expect(JSON.stringify(model.doStreamCalls[0]?.tools)).toContain(
       "proposeChangeSet",
     );
     expect(await readFile(join(workspace, "src", "tasks.ts"), "utf8")).toBe(
@@ -1236,15 +1226,12 @@ describe("Agent session", () => {
             },
           ],
           undefined,
-          { proposalRequested: true },
         ),
       ),
     );
     const pending = session.getPendingChangeSet();
 
-    expect(JSON.stringify(model.doStreamCalls[1]?.tools)).toContain(
-      "proposeChangeSet",
-    );
+    expect(JSON.stringify(model.doStreamCalls[1]?.tools)).toContain("proposeChangeSet");
     expect(trace).toContain("Add a second task");
     expect(trace).toContain("--- a/src/tasks.ts");
     expect(pending?.status).toBe("pending");
@@ -1322,7 +1309,6 @@ describe("Agent session", () => {
             },
           ],
           undefined,
-          { proposalRequested: true },
         ),
       ),
     );
@@ -1387,7 +1373,6 @@ describe("Agent session", () => {
             },
           ],
           undefined,
-          { proposalRequested: true },
         ),
       ),
     );

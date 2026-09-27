@@ -2,7 +2,6 @@ import { useChat } from "@ai-sdk/react";
 import {
   AlertCircle,
   Bot,
-  GitPullRequestArrow,
   RotateCcw,
   Send,
   Square,
@@ -93,17 +92,6 @@ export function ChatWorkspace({
     finishLocally,
     terminalDiagnostics,
   } = useTurnDiagnostics({ contextWarningCharacters, error, messages, model });
-  const hasPendingChangeSet = messages.some((message) =>
-    message.parts.some((part) => {
-      if (!isToolUIPart(part)) return false;
-      const review = changeSetReviewFromPart(part);
-      return review
-        ? !rejectedChangeSets.has(review.changeSet.id) &&
-            !appliedChangeSets.has(review.changeSet.id)
-        : false;
-    }),
-  );
-
   function submit() {
     const text = input.trim();
     if (!text || active) return;
@@ -117,18 +105,6 @@ export function ChatWorkspace({
     setInterrupted(false);
     beginTurn("regenerate");
     void regenerate();
-  }
-
-  function requestProposal() {
-    if (active || hasPendingChangeSet || messages.length === 0) return;
-    setInterrupted(false);
-    beginTurn();
-    void sendMessage(
-      {
-        text: "Proposal Request: Prepare one Change Set from our discussion for review.",
-      },
-      { body: { proposalRequested: true } },
-    );
   }
 
   function handleRejectedChangeSet(id: string, feedback: string) {
@@ -327,18 +303,6 @@ export function ChatWorkspace({
         <p className="mx-auto mt-2 max-w-3xl text-center text-[11px] text-muted-foreground">
           Enter to send · Shift+Enter for a new line
         </p>
-        <div className="mx-auto mt-3 flex max-w-3xl justify-center">
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={requestProposal}
-            disabled={active || hasPendingChangeSet || messages.length === 0}
-          >
-            <GitPullRequestArrow />
-            {hasPendingChangeSet ? "Change Set pending" : "Propose changes"}
-          </Button>
-        </div>
         <p className="sr-only" aria-live="polite" aria-atomic="true">
           {status === "submitted"
             ? "Message sent. Waiting for OpenAI."

@@ -80,7 +80,7 @@ The production model adapter is OpenAI. The deterministic AI SDK mock used by th
 The authorization sequence is deliberately narrow:
 
 1. Conversation and Workspace inspection are read-only.
-2. **Propose changes** starts a Proposal Request and temporarily exposes the proposal Tool. It grants no write permission.
+2. Tell the Coding Agent in chat that you agree and want a Change Set prepared. It grants no write permission.
 3. The server validates the operations and creates the review diff.
 4. Only **Approve Change Set** authorizes that exact Change Set ID and content.
 5. Before writing, the server rechecks every path, fingerprint, and content limit. One stale or invalid operation rejects the whole set.
@@ -98,7 +98,7 @@ Use the bundled `examples/task-list` Workspace so every Change Set is disposable
 2. Open **Agent Configuration**. Inspect the effective instruction policy, four Tool capabilities, Safety Limits, and telemetry status.
 3. Send: “Inspect this Workspace and explain its task model. Do not propose changes.” Expand each Tool Trace to compare the exact arguments and bounded result with the answer. No file should change.
 4. Continue: “I want tasks to support an optional priority of low, normal, or high. Update the summary to mention how many high-priority tasks remain, and update the TypeScript test.” Discussion still cannot write files.
-5. Select **Propose changes**. Review the affected `.ts` files, server-generated diffs, warnings, and exact structured Tool arguments. Reject once with feedback if you want to observe the revision loop.
+5. Tell the Coding Agent that you agree and want it to prepare a Change Set. Review the affected `.ts` files, server-generated diffs, warnings, and exact structured Tool arguments. Reject once with feedback if you want to observe the revision loop.
 6. Request a new proposal if needed, then approve the exact Change Set. Watch the applying and verified states, followed by the model’s summary of the authoritative application result.
 7. Inspect the expandable turn diagnostics and run the Example Workspace test yourself:
 

@@ -43,14 +43,14 @@ describe("Agent Lab startup", () => {
         ]),
         turnInstructions: expect.arrayContaining([
           expect.stringContaining("filesystem writes"),
-          expect.stringContaining("Proposal Request"),
+          expect.stringContaining("chat agreement"),
           expect.stringContaining("verified application result"),
         ]),
         tools: [
           "listFiles",
           "readFile",
           "searchCode",
-          "proposeChangeSet (Proposal Request only)",
+          "proposeChangeSet (after chat agreement)",
         ],
         safetyLimits: {
           maxSteps: 12,

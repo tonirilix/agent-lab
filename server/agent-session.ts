@@ -167,7 +167,6 @@ export async function createAgentSession({
       messages: UIMessage[],
       abortSignal?: AbortSignal,
       options: {
-        proposalRequested?: boolean;
         completedChangeSetId?: string;
       } = {},
     ) {
@@ -185,36 +184,32 @@ export async function createAgentSession({
             "Verified Change Set result does not match this Agent Turn.",
           );
         }
-        const tools = options.proposalRequested
-          ? {
-              ...readOnlyTools,
-              proposeChangeSet: tool({
-                description:
-                  "Prepare one structured Change Set for review. This creates no files and grants no write permission.",
-                inputSchema: jsonSchema(
-                  zodSchema(changeSetProposalSchema).jsonSchema,
-                ),
-                execute: async (proposal) => {
-                  try {
-                    const changeSet = await changeSets.prepare(proposal);
-                    proposalCreatedThisTurn = true;
-                    return { ok: true as const, changeSet };
-                  } catch (error) {
-                    if (error instanceof ChangeSetValidationError) {
-                      return {
-                        ok: false as const,
-                        error: {
-                          code: "invalid_change_set",
-                          message: error.message,
-                        },
-                      };
-                    }
-                    throw error;
-                  }
-                },
-              }),
-            }
-          : readOnlyTools;
+        const tools = {
+          ...readOnlyTools,
+          proposeChangeSet: tool({
+            description:
+              "Prepare one structured Change Set for review. This creates no files and grants no write permission.",
+            inputSchema: jsonSchema(zodSchema(changeSetProposalSchema).jsonSchema),
+            execute: async (proposal) => {
+              try {
+                const changeSet = await changeSets.prepare(proposal);
+                proposalCreatedThisTurn = true;
+                return { ok: true as const, changeSet };
+              } catch (error) {
+                if (error instanceof ChangeSetValidationError) {
+                  return {
+                    ok: false as const,
+                    error: {
+                      code: "invalid_change_set",
+                      message: error.message,
+                    },
+                  };
+                }
+                throw error;
+              }
+            },
+          }),
+        };
         const result = streamText({
           model,
           instructions: [
@@ -222,9 +217,7 @@ export async function createAgentSession({
             completedChangeSet
               ? "Agent Lab already applied and verified the user-approved Change Set. Describe that result accurately without implying an unverified action."
               : "Never claim that you changed files: this Agent Turn has no write capability.",
-            options.proposalRequested
-              ? "The user made a Proposal Request. After enough inspection, call proposeChangeSet once with the complete Change Set. This prepares review data only."
-              : "No Proposal Request was made. You cannot prepare a Change Set in this Agent Turn.",
+            "Call proposeChangeSet only after the user clearly agrees in chat that they want a Change Set prepared. It prepares review data only; it never writes files. Otherwise, discuss or inspect the Workspace without proposing a Change Set.",
             completedChangeSet
               ? `The user approved a Change Set that Agent Lab applied and verified. Base your final summary on this authoritative application result: ${JSON.stringify(completedChangeSet)}`
               : "No verified application result is attached to this Agent Turn.",

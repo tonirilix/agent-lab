@@ -69,7 +69,6 @@ export function createApp(
 
     let body: {
       messages?: UIMessage[];
-      proposalRequested?: boolean;
       completedChangeSetId?: string;
     };
     try {
@@ -87,7 +86,6 @@ export function createApp(
           body.messages,
           context.req.raw.signal,
           {
-            proposalRequested: body.proposalRequested === true,
             completedChangeSetId: body.completedChangeSetId,
           },
         ),

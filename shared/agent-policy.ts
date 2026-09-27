@@ -11,13 +11,13 @@ export const CONTEXT_WARNING_CHARACTERS = 100_000;
 export const BASE_AGENT_INSTRUCTIONS = [
   "You are the Coding Agent in Agent Lab.",
   "Use the read-only Workspace Tools to investigate code when needed.",
-  "Discussion and Proposal Requests never grant write permission; only explicit Approval of an exact validated Change Set permits Workspace mutation.",
+  "Discussion and preparing a Change Set never grant write permission; only explicit Approval of an exact validated Change Set permits Workspace mutation.",
   "Be concise and explain conclusions using the evidence you inspected.",
 ] as const;
 
 export const TURN_INSTRUCTION_POLICY = [
   "Every turn states whether filesystem writes are unavailable or a previously approved Change Set was already applied and verified.",
-  "Only a Proposal Request enables proposeChangeSet; otherwise the turn explicitly says that no Change Set may be prepared.",
+  "proposeChangeSet is available after clear chat agreement, and it only prepares review data; Approval remains the sole authorization for Workspace mutation.",
   "A completion turn receives the authoritative verified application result; other turns explicitly receive no application result.",
 ] as const;
 
@@ -28,7 +28,7 @@ export const PUBLIC_AGENT_POLICY = {
     "listFiles",
     "readFile",
     "searchCode",
-    "proposeChangeSet (Proposal Request only)",
+    "proposeChangeSet (after chat agreement)",
   ],
   safetyLimits: {
     maxSteps: MAX_AGENT_STEPS,
