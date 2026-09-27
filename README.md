@@ -105,6 +105,10 @@ Tool-read source stays local until a Tool reads it; that bounded Tool result is 
 
 The separate **Workflow** view asks a coordinator to assign two distinct read-only investigations for one objective. One worker traces the code path; the other finds tests and risks. They run concurrently. After both report, the coordinator writes an implementation plan, an implementer prepares one Change Set, automated verification runs for the bundled example, and an independent reviewer assesses the diff and verification result. The view shows each stage's status, findings, or error. A failed step can be retried without repeating completed work. Chat stays available in its own view, and switching between views preserves both sessions. The user still decides whether to approve the exact Change Set; the workflow never applies files on its own.
 
+The Workflow view with representative run data, ready for human review:
+
+![Agent Lab Workflow view showing parallel investigators and the review stage](docs/screenshots/agent-workflow.png)
+
 ```text
 User objective
       |
